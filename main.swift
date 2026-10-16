@@ -2,6 +2,8 @@ import Cocoa
 import SwiftUI
 import Carbon.HIToolbox
 import ServiceManagement
+import CryptoKit
+import ImageIO
 
 // MARK: - Konfigurasi
 let maxItems = 10                               // total item (pin + biasa)
@@ -20,7 +22,12 @@ struct Clip: Codable, Identifiable, Equatable {
     var text: String
     var pinned = false
     var date = Date()
+    var image: String? = nil      // nama file PNG di folder images (nil = teks)
+
+    var isImage: Bool { image != nil }
 }
+
+let maxImageBytes = 25 * 1024 * 1024
 
 @MainActor
 final class Store: ObservableObject {
@@ -28,11 +35,14 @@ final class Store: ObservableObject {
     @Published var selected = 0
     @Published var keyboardMoves = 0
     private let url: URL
+    let imagesDir: URL
+    private var thumbs: [String: NSImage] = [:]
 
     init() {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("ClipHistory", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        imagesDir = dir.appendingPathComponent("images", isDirectory: true)
+        try? FileManager.default.createDirectory(at: imagesDir, withIntermediateDirectories: true)
         url = dir.appendingPathComponent("history.json")
 
         guard let data = try? Data(contentsOf: url) else { return }
@@ -41,12 +51,37 @@ final class Store: ObservableObject {
         } else if let old = try? JSONDecoder().decode([String].self, from: data) {
             items = old.map { Clip(text: $0) } // format versi 1.0.x
         }
+        items.removeAll { $0.isImage && !FileManager.default.fileExists(atPath: imageURL($0.image!).path) }
         trim()
+        cleanupImages()
     }
 
+    // MARK: Tambah
     func add(_ s: String) {
-        var clip = Clip(text: s)
-        if let i = items.firstIndex(where: { $0.text == s }) {
+        insert(Clip(text: s)) { !$0.isImage && $0.text == s }
+    }
+
+    func addImage(png: Data) {
+        guard png.count <= maxImageBytes else { return }
+        let name = SHA256.hash(data: png).map { String(format: "%02x", $0) }.joined() + ".png"
+        let file = imageURL(name)
+        if !FileManager.default.fileExists(atPath: file.path) {
+            guard (try? png.write(to: file, options: .atomic)) != nil else { return }
+        }
+        insert(Clip(text: "", image: name)) { $0.image == name }
+    }
+
+    func bump(_ id: UUID) {
+        guard let i = items.firstIndex(where: { $0.id == id }) else { return }
+        var clip = items.remove(at: i)
+        clip.date = Date()
+        items.insert(clip, at: 0)
+        save()
+    }
+
+    private func insert(_ new: Clip, matching same: (Clip) -> Bool) {
+        var clip = new
+        if let i = items.firstIndex(where: same) {
             clip = items.remove(at: i)
             clip.date = Date()
         }
@@ -55,6 +90,47 @@ final class Store: ObservableObject {
         save()
     }
 
+    // MARK: Gambar
+    func imageURL(_ name: String) -> URL { imagesDir.appendingPathComponent(name) }
+
+    func imageData(_ clip: Clip) -> Data? {
+        guard let name = clip.image else { return nil }
+        return try? Data(contentsOf: imageURL(name))
+    }
+
+    func thumbnail(_ name: String) -> NSImage? {
+        if let t = thumbs[name] { return t }
+        guard let src = CGImageSourceCreateWithURL(imageURL(name) as CFURL, nil) else { return nil }
+        let opts: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 640,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
+        let img = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        thumbs[name] = img
+        return img
+    }
+
+    func imageSize(_ name: String) -> String {
+        guard let src = CGImageSourceCreateWithURL(imageURL(name) as CFURL, nil),
+              let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+              let w = props[kCGImagePropertyPixelWidth] as? Int,
+              let h = props[kCGImagePropertyPixelHeight] as? Int else { return "" }
+        return "\(w)×\(h)"
+    }
+
+    // Hapus file gambar yang sudah tidak dipakai
+    private func cleanupImages() {
+        let used = Set(items.compactMap(\.image))
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: imagesDir.path)) ?? []
+        for f in files where !used.contains(f) {
+            try? FileManager.default.removeItem(at: imageURL(f))
+            thumbs[f] = nil
+        }
+    }
+
+    // MARK: Pin & hapus
     var pinCount: Int { items.filter(\.pinned).count }
     var canPinMore: Bool { pinCount < maxPins }
 
@@ -101,6 +177,7 @@ final class Store: ObservableObject {
         if let data = try? JSONEncoder().encode(items) {
             try? data.write(to: url, options: .atomic)
         }
+        cleanupImages()
     }
 }
 
@@ -147,6 +224,8 @@ struct ClipboardView: View {
                                     clip: clip,
                                     selected: i == store.selected,
                                     canPin: clip.pinned || store.canPinMore,
+                                    thumbnail: clip.image.flatMap { store.thumbnail($0) },
+                                    imageInfo: clip.image.map { store.imageSize($0) } ?? "",
                                     onPin: { store.togglePin(clip.id) },
                                     onDelete: { store.remove(clip.id) }
                                 )
@@ -181,6 +260,8 @@ struct ClipRow: View {
     let clip: Clip
     let selected: Bool
     let canPin: Bool
+    let thumbnail: NSImage?
+    let imageInfo: String
     let onPin: () -> Void
     let onDelete: () -> Void
     @State private var hover = false
@@ -188,10 +269,27 @@ struct ClipRow: View {
     var body: some View {
         let showActions = hover || selected
         HStack(alignment: .top, spacing: 6) {
-            Text(String(clip.text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(400)))
-                .font(.system(size: 12))
-                .lineLimit(3)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            Group {
+                if clip.isImage {
+                    VStack(alignment: .leading, spacing: 4) {
+                        if let thumbnail {
+                            Image(nsImage: thumbnail)
+                                .resizable()
+                                .scaledToFit()
+                                .frame(maxHeight: 90, alignment: .leading)
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                        }
+                        Text(L("Image", "Gambar") + (imageInfo.isEmpty ? "" : "  ·  \(imageInfo)"))
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text(String(clip.text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(400)))
+                        .font(.system(size: 12))
+                        .lineLimit(3)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 0) {
                 IconButton(name: clip.pinned ? "pin.fill" : "pin",
@@ -403,9 +501,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         if types.contains("org.nspasteboard.ConcealedType") ||
            types.contains("org.nspasteboard.TransientType") { return }
 
-        guard let s = pb.string(forType: .string),
-              !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        store.add(s)
+        // Teks didahulukan (copy file di Finder juga berisi ikon, jangan disimpan sebagai gambar)
+        if let s = pb.string(forType: .string),
+           !s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            store.add(s)
+            return
+        }
+
+        // Gambar: screenshot ke clipboard, copy image dari browser, dll.
+        if let png = pb.data(forType: .png) {
+            store.addImage(png: png)
+        } else if let tiff = pb.data(forType: .tiff), tiff.count <= maxImageBytes * 2,
+                  let rep = NSBitmapImageRep(data: tiff),
+                  let png = rep.representation(using: .png, properties: [:]) {
+            store.addImage(png: png)
+        }
     }
 
     // MARK: Panel
@@ -496,9 +606,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     func pick(_ clip: Clip) {
         let pb = NSPasteboard.general
         pb.clearContents()
-        pb.setString(clip.text, forType: .string)
+        if clip.isImage {
+            guard let png = store.imageData(clip) else { NSSound.beep(); return }
+            pb.declareTypes([.png, .tiff], owner: nil)
+            pb.setData(png, forType: .png)
+            if let tiff = NSBitmapImageRep(data: png)?.tiffRepresentation {
+                pb.setData(tiff, forType: .tiff)
+            }
+        } else {
+            pb.setString(clip.text, forType: .string)
+        }
         lastChange = pb.changeCount
-        store.add(clip.text)
+        store.bump(clip.id)
         hidePanel()
 
         if AXIsProcessTrusted() {

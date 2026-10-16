@@ -36,12 +36,13 @@ Requires macOS 13 or later. Runs on both Apple Silicon and Intel.
 
 • Windows-style popup panel (like Win+V), opens at your cursor with Cmd+Shift+V
 • Click an item or press Enter to paste it right away
+• Saves images too: screenshots copied to the clipboard (Cmd+Ctrl+Shift+4), images copied from a browser or any app
 • Pin important items so they never get removed
 • Delete button on every item, plus "Clear all" for everything that isn't pinned
 • Keyboard navigation: ↑↓ to select, 1–9 for quick pick, Delete to remove, Esc to close
 • Keeps up to 10 items, up to 7 of them pinned. The oldest unpinned item is removed when you copy something new
 • Ignores text copied from password managers
-• History is saved to `~/Library/Application Support/ClipHistory/history.json`, so it survives restarts
+• History is saved to `~/Library/Application Support/ClipHistory/` (`history.json` plus an `images` folder), so it survives restarts
 • Optional "Open at Login"
 • Follows your macOS language: Indonesian if your Mac is set to Indonesian, English otherwise
 
