@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag rilis yang mau diisi DMG (contoh: v1.0.0)"
+        description: "Tag rilis (contoh: v1.3.0)"
         required: true
 
 permissions:
@@ -19,8 +19,30 @@ jobs:
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
       GH_TOKEN: ${{ github.token }}
+      BUILD_NUMBER: ${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Import signing certificate
+        env:
+          CERT_P12: ${{ secrets.SIGNING_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+        run: |
+          if [ -z "$CERT_P12" ]; then
+            echo "::warning::SIGNING_CERT_P12 belum diisi, pakai ad-hoc signing"
+            exit 0
+          fi
+          echo "$CERT_P12" | base64 --decode > cert.p12
+          openssl pkcs12 -in cert.p12 -passin env:CERT_PASSWORD -nokeys -out cert.pem
+          security create-keychain -p ci build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p ci build.keychain
+          security set-keychain-settings build.keychain
+          security import cert.p12 -k build.keychain -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k ci build.keychain
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain cert.pem
+          rm -f cert.p12 cert.pem
+          echo "SIGN_ID=ClipHistory Signing" >> "$GITHUB_ENV"
 
       - name: Build DMG
         run: |
@@ -31,6 +53,7 @@ jobs:
             exit 1
           fi
           cat build.log
+          grep "designated" build.log | while IFS= read -r line; do echo "::notice::$line"; done
 
       - name: Upload to release
         run: |

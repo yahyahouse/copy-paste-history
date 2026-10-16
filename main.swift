@@ -228,6 +228,120 @@ struct IconButton: View {
     }
 }
 
+// MARK: - Auto-update dari GitHub Releases
+struct GHRelease: Decodable {
+    struct Asset: Decodable { let name: String; let browser_download_url: String }
+    let tag_name: String
+    let assets: [Asset]
+}
+
+@MainActor
+final class Updater {
+    static let repo = "yahyahouse/copy-paste-history"
+    private(set) var status = ""
+    private var busy = false
+
+    var currentVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+    }
+
+    func check(manual: Bool) {
+        guard !busy else { return }
+        busy = true
+        Task {
+            defer { busy = false }
+            do {
+                var req = URLRequest(url: URL(string: "https://api.github.com/repos/\(Self.repo)/releases/latest")!)
+                req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+                let (data, _) = try await URLSession.shared.data(for: req)
+                let rel = try JSONDecoder().decode(GHRelease.self, from: data)
+                let latest = rel.tag_name.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+
+                guard Self.isNewer(latest, than: currentVersion),
+                      let asset = rel.assets.first(where: { $0.name.hasSuffix(".dmg") }),
+                      let url = URL(string: asset.browser_download_url) else {
+                    status = "Sudah versi terbaru"
+                    if manual { Self.alert("ClipHistory sudah versi terbaru (v\(currentVersion)).") }
+                    return
+                }
+
+                let appPath = Bundle.main.bundlePath
+                if appPath.contains("/AppTranslocation/") || appPath.hasPrefix("/Volumes/") {
+                    status = "Pindahkan app ke Applications untuk update"
+                    if manual { Self.alert("Pindahkan ClipHistory ke folder Applications dulu supaya bisa update otomatis.") }
+                    return
+                }
+
+                status = "Mengunduh v\(latest)…"
+                let (tmp, _) = try await URLSession.shared.download(from: url)
+                let target = URL(fileURLWithPath: appPath)
+                try await Task.detached { try Self.install(dmgAt: tmp, replacing: target) }.value
+                Self.relaunch(target)
+            } catch {
+                status = "Gagal update"
+                if manual { Self.alert("Gagal cek update: \(error.localizedDescription)") }
+            }
+        }
+    }
+
+    nonisolated static func isNewer(_ a: String, than b: String) -> Bool {
+        let x = a.split(separator: ".").map { Int($0) ?? 0 }
+        let y = b.split(separator: ".").map { Int($0) ?? 0 }
+        for i in 0..<max(x.count, y.count) {
+            let p = i < x.count ? x[i] : 0
+            let q = i < y.count ? y[i] : 0
+            if p != q { return p > q }
+        }
+        return false
+    }
+
+    nonisolated static func install(dmgAt tmp: URL, replacing target: URL) throws {
+        let fm = FileManager.default
+        let work = fm.temporaryDirectory.appendingPathComponent("ClipHistoryUpdate-\(UUID().uuidString)")
+        try fm.createDirectory(at: work, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: work) }
+
+        let dmg = work.appendingPathComponent("update.dmg")
+        try fm.moveItem(at: tmp, to: dmg)
+
+        let mount = work.appendingPathComponent("mnt")
+        try run("/usr/bin/hdiutil", ["attach", dmg.path, "-nobrowse", "-quiet", "-mountpoint", mount.path])
+        defer { try? run("/usr/bin/hdiutil", ["detach", mount.path, "-quiet", "-force"]) }
+
+        let staged = work.appendingPathComponent("ClipHistory.app")
+        try run("/usr/bin/ditto", [mount.appendingPathComponent("ClipHistory.app").path, staged.path])
+        _ = try fm.replaceItemAt(target, withItemAt: staged)
+    }
+
+    nonisolated static func run(_ path: String, _ args: [String]) throws {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: path)
+        p.arguments = args
+        try p.run()
+        p.waitUntilExit()
+        if p.terminationStatus != 0 {
+            throw NSError(domain: "ClipHistory", code: Int(p.terminationStatus),
+                          userInfo: [NSLocalizedDescriptionKey: "\(path) gagal (\(p.terminationStatus))"])
+        }
+    }
+
+    static func relaunch(_ app: URL) {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "sleep 1; open \"$0\"", app.path]
+        try? p.run()
+        NSApp.terminate(nil)
+    }
+
+    static func alert(_ text: String) {
+        NSApp.activate(ignoringOtherApps: true)
+        let a = NSAlert()
+        a.messageText = "ClipHistory"
+        a.informativeText = text
+        a.runModal()
+    }
+}
+
 // MARK: - Panel
 final class ClipPanel: NSPanel {
     override var canBecomeKey: Bool { true }
@@ -237,6 +351,7 @@ final class ClipPanel: NSPanel {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
     let store = Store()
+    let updater = Updater()
     var statusItem: NSStatusItem!
     var panel: ClipPanel!
     var lastChange = NSPasteboard.general.changeCount
@@ -259,7 +374,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         timer.tolerance = 0.2
 
         registerHotKey()
+
+        // Cek update 10 detik setelah buka, lalu tiap 6 jam
+        perform(#selector(autoUpdate), with: nil, afterDelay: 10)
+        Timer.scheduledTimer(timeInterval: 6 * 3600, target: self,
+                             selector: #selector(autoUpdate), userInfo: nil, repeats: true)
     }
+
+    @objc func autoUpdate() {
+        guard !panel.isVisible else { return }
+        updater.check(manual: false)
+    }
+
+    @objc func manualUpdate() { updater.check(manual: true) }
 
     // MARK: Clipboard watcher
     @objc func poll() {
@@ -418,6 +545,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         let clear = NSMenuItem(title: "Hapus Semua (kecuali pin)", action: #selector(clearAll), keyEquivalent: "")
         clear.target = self
         menu.addItem(clear)
+
+        menu.addItem(.separator())
+
+        let version = NSMenuItem(title: "Versi \(updater.currentVersion)", action: nil, keyEquivalent: "")
+        version.isEnabled = false
+        menu.addItem(version)
+
+        if !updater.status.isEmpty {
+            let st = NSMenuItem(title: updater.status, action: nil, keyEquivalent: "")
+            st.isEnabled = false
+            menu.addItem(st)
+        }
+
+        let upd = NSMenuItem(title: "Cek Update", action: #selector(manualUpdate), keyEquivalent: "")
+        upd.target = self
+        menu.addItem(upd)
 
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Keluar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")

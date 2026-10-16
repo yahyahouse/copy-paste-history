@@ -5,6 +5,12 @@ cd "$(dirname "$0")"
 VERSION="${1:-dev}"
 DMG="ClipHistory-$VERSION.dmg"
 
+# Samakan versi app dengan tag rilis (dipakai auto-update)
+if [ "$VERSION" != "dev" ]; then
+  /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" Info.plist
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUILD_NUMBER:-1}" Info.plist
+fi
+
 ./build.sh
 
 rm -rf dmg "$DMG"

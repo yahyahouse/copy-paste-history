@@ -45,9 +45,13 @@ GitHub Actions akan build DMG dan menaruhnya di Releases otomatis.
 • Riwayat tersimpan di `~/Library/Application Support/ClipHistory/history.json`
 • Opsi "Buka saat Login"
 
+## Update otomatis
+
+App mengecek rilis baru di GitHub saat dibuka dan setiap 6 jam. Kalau ada versi baru, DMG-nya diunduh, app diganti, lalu dibuka ulang otomatis. Bisa juga dicek manual lewat menu "Cek Update". App harus berada di folder Applications.
+
 ## Auto-paste
 
-Klik "Aktifkan Auto-Paste…" di menu, lalu izinkan ClipHistory di System Settings → Privacy & Security → Accessibility. Setelah build ulang, izin perlu dicentang ulang.
+Klik "Aktifkan Auto-Paste…" di menu, lalu izinkan ClipHistory di System Settings → Privacy & Security → Accessibility. Rilis resmi ditandatangani dengan sertifikat yang sama, jadi izin ini tetap berlaku setelah update.
 
 ## Konfigurasi
 

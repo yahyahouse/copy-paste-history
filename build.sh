@@ -4,6 +4,8 @@ cd "$(dirname "$0")"
 
 APP="ClipHistory.app"
 BIN="$APP/Contents/MacOS/ClipHistory"
+SIGN_ID="${SIGN_ID:--}"   # "-" = ad-hoc, isi nama sertifikat untuk identitas tetap
+
 rm -rf "$APP" build
 mkdir -p "$APP/Contents/MacOS" build
 
@@ -18,6 +20,7 @@ lipo -create build/ClipHistory-arm64 build/ClipHistory-x86_64 -output "$BIN"
 rm -rf build
 
 cp Info.plist "$APP/Contents/"
-codesign --force --sign - "$APP"
+codesign --force --sign "$SIGN_ID" --identifier com.yahyawijaya.cliphistory "$APP"
+codesign -dr - "$APP" 2>&1 | tail -1
 
 echo "Selesai: $(pwd)/$APP"
