@@ -40,7 +40,7 @@ GitHub Actions akan build DMG dan menaruhnya di Releases otomatis.
 • Pin item penting supaya tidak ikut terhapus
 • Tombol hapus di tiap item, plus "Hapus semua" untuk item yang tidak di-pin
 • Navigasi keyboard: ↑↓ pilih, 1–9 pilih cepat, Delete hapus, Esc tutup
-• Menyimpan 50 item terakhir (item yang di-pin tidak dihitung)
+• Maksimal 10 item, 7 di antaranya boleh di-pin. Item biasa yang paling lama otomatis terhapus saat ada copy baru
 • Teks dari password manager otomatis diabaikan
 • Riwayat tersimpan di `~/Library/Application Support/ClipHistory/history.json`
 • Opsi "Buka saat Login"
@@ -51,4 +51,4 @@ Klik "Aktifkan Auto-Paste…" di menu, lalu izinkan ClipHistory di System Settin
 
 ## Konfigurasi
 
-Ubah konstanta di bagian atas `main.swift` (jumlah item, hotkey).
+Ubah konstanta di bagian atas `main.swift` (jumlah item, jumlah pin, hotkey).

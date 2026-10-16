@@ -4,7 +4,8 @@ import Carbon.HIToolbox
 import ServiceManagement
 
 // MARK: - Konfigurasi
-let maxItems = 50                               // batas item yang tidak di-pin
+let maxItems = 10                               // total item (pin + biasa)
+let maxPins = 7                                 // maksimal item yang di-pin
 let hotKeyCode = UInt32(kVK_ANSI_V)             // tombol V
 let hotKeyModifiers = UInt32(cmdKey | shiftKey) // Cmd + Shift
 let panelSize = NSSize(width: 360, height: 440)
@@ -36,6 +37,7 @@ final class Store: ObservableObject {
         } else if let old = try? JSONDecoder().decode([String].self, from: data) {
             items = old.map { Clip(text: $0) } // format versi 1.0.x
         }
+        trim()
     }
 
     func add(_ s: String) {
@@ -49,8 +51,15 @@ final class Store: ObservableObject {
         save()
     }
 
+    var pinCount: Int { items.filter(\.pinned).count }
+    var canPinMore: Bool { pinCount < maxPins }
+
     func togglePin(_ id: UUID) {
         guard let i = items.firstIndex(where: { $0.id == id }) else { return }
+        if !items[i].pinned && !canPinMore {
+            NSSound.beep()
+            return
+        }
         items[i].pinned.toggle()
         save()
     }
@@ -73,12 +82,14 @@ final class Store: ObservableObject {
         keyboardMoves += 1
     }
 
+    // Sisa slot setelah pin dipakai item biasa, yang paling lama dibuang
     private func trim() {
+        let slots = max(0, maxItems - pinCount)
         var unpinned = 0
         items = items.filter { c in
             if c.pinned { return true }
             unpinned += 1
-            return unpinned <= maxItems
+            return unpinned <= slots
         }
     }
 
@@ -98,6 +109,9 @@ struct ClipboardView: View {
         VStack(spacing: 0) {
             HStack {
                 Text("Clipboard").font(.system(size: 13, weight: .semibold))
+                Text("\(store.pinCount)/\(maxPins) pin")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
                 Spacer()
                 Button("Hapus semua") { store.clearUnpinned() }
                     .buttonStyle(.plain)
@@ -128,6 +142,7 @@ struct ClipboardView: View {
                                 ClipRow(
                                     clip: clip,
                                     selected: i == store.selected,
+                                    canPin: clip.pinned || store.canPinMore,
                                     onPin: { store.togglePin(clip.id) },
                                     onDelete: { store.remove(clip.id) }
                                 )
@@ -161,6 +176,7 @@ struct ClipboardView: View {
 struct ClipRow: View {
     let clip: Clip
     let selected: Bool
+    let canPin: Bool
     let onPin: () -> Void
     let onDelete: () -> Void
     @State private var hover = false
@@ -174,8 +190,11 @@ struct ClipRow: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 0) {
-                IconButton(name: clip.pinned ? "pin.fill" : "pin", help: clip.pinned ? "Lepas pin" : "Pin", action: onPin)
-                    .opacity(showActions || clip.pinned ? 1 : 0)
+                IconButton(name: clip.pinned ? "pin.fill" : "pin",
+                           help: clip.pinned ? "Lepas pin" : (canPin ? "Pin" : "Maksimal \(maxPins) pin"),
+                           action: onPin)
+                    .opacity(clip.pinned ? 1 : (showActions ? (canPin ? 1 : 0.3) : 0))
+                    .disabled(!canPin)
                 IconButton(name: "trash", help: "Hapus", action: onDelete)
                     .opacity(showActions ? 1 : 0)
                     .disabled(!showActions)
