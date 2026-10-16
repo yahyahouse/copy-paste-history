@@ -105,16 +105,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.target = self
             item.tag = i
             item.toolTip = String(s.prefix(500))
-
-            // Tahan Option untuk hapus satu item
-            let del = NSMenuItem(title: "Hapus: " + preview(s), action: #selector(removeOne(_:)), keyEquivalent: "")
-            del.target = self
-            del.tag = i
-            del.isAlternate = true
-            del.keyEquivalentModifierMask = .option
-
             menu.addItem(item)
-            menu.addItem(del)
+        }
+
+        if !store.items.isEmpty {
+            let hint = NSMenuItem(title: "Option+klik untuk hapus item", action: nil, keyEquivalent: "")
+            hint.isEnabled = false
+            menu.addItem(hint)
         }
 
         menu.addItem(.separator())
@@ -148,6 +145,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func pick(_ sender: NSMenuItem) {
         guard store.items.indices.contains(sender.tag) else { return }
+
+        // Option+klik = hapus item
+        if NSEvent.modifierFlags.contains(.option) {
+            store.remove(at: sender.tag)
+            return
+        }
+
         let s = store.items[sender.tag]
         let pb = NSPasteboard.general
         pb.clearContents()
@@ -155,12 +159,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         lastChange = pb.changeCount
         store.add(s)
 
-        if openedByHotKey && AXIsProcessTrusted() {
-            perform(#selector(pasteToFrontApp), with: nil, afterDelay: 0.05)
+        if openedByHotKey {
+            if AXIsProcessTrusted() {
+                perform(#selector(pasteToFrontApp), with: nil, afterDelay: 0.15)
+            } else {
+                requestAccessibility()
+            }
         }
     }
-
-    @objc func removeOne(_ sender: NSMenuItem) { store.remove(at: sender.tag) }
 
     @objc func clearAll() { store.clear() }
 
@@ -198,7 +204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let menu = statusItem.menu else { return }
         openedByHotKey = true
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
-        perform(#selector(resetHotKeyFlag), with: nil, afterDelay: 0.1)
+        perform(#selector(resetHotKeyFlag), with: nil, afterDelay: 0.5)
     }
 
     @objc func resetHotKeyFlag() { openedByHotKey = false }
