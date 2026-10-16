@@ -10,6 +10,10 @@ let hotKeyCode = UInt32(kVK_ANSI_V)             // tombol V
 let hotKeyModifiers = UInt32(cmdKey | shiftKey) // Cmd + Shift
 let panelSize = NSSize(width: 360, height: 440)
 
+// MARK: - Bahasa: ikut bahasa macOS (Indonesia atau Inggris)
+let isIndonesian = (Locale.preferredLanguages.first ?? "en").hasPrefix("id")
+func L(_ en: String, _ id: String) -> String { isIndonesian ? id : en }
+
 // MARK: - Model
 struct Clip: Codable, Identifiable, Equatable {
     var id = UUID()
@@ -109,11 +113,11 @@ struct ClipboardView: View {
         VStack(spacing: 0) {
             HStack {
                 Text("Clipboard").font(.system(size: 13, weight: .semibold))
-                Text("\(store.pinCount)/\(maxPins) pin")
+                Text("\(store.pinCount)/\(maxPins) " + L("pinned", "pin"))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Hapus semua") { store.clearUnpinned() }
+                Button(L("Clear all", "Hapus semua")) { store.clearUnpinned() }
                     .buttonStyle(.plain)
                     .font(.system(size: 12))
                     .foregroundColor(.accentColor)
@@ -129,7 +133,7 @@ struct ClipboardView: View {
                     Image(systemName: "doc.on.clipboard")
                         .font(.system(size: 26))
                         .foregroundStyle(.secondary)
-                    Text("Belum ada riwayat")
+                    Text(L("No history yet", "Belum ada riwayat"))
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
@@ -164,7 +168,7 @@ struct ClipboardView: View {
 
             Divider()
 
-            Text("↑↓ pilih  ·  Enter paste  ·  Del hapus  ·  Esc tutup")
+            Text(L("↑↓ select  ·  Enter paste  ·  Del delete  ·  Esc close", "↑↓ pilih  ·  Enter paste  ·  Del hapus  ·  Esc tutup"))
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .padding(.vertical, 6)
@@ -191,11 +195,11 @@ struct ClipRow: View {
 
             HStack(spacing: 0) {
                 IconButton(name: clip.pinned ? "pin.fill" : "pin",
-                           help: clip.pinned ? "Lepas pin" : (canPin ? "Pin" : "Maksimal \(maxPins) pin"),
+                           help: clip.pinned ? L("Unpin", "Lepas pin") : (canPin ? L("Pin", "Pin") : L("Max \(maxPins) pins", "Maksimal \(maxPins) pin")),
                            action: onPin)
                     .opacity(clip.pinned ? 1 : (showActions ? (canPin ? 1 : 0.3) : 0))
                     .disabled(!canPin)
-                IconButton(name: "trash", help: "Hapus", action: onDelete)
+                IconButton(name: "trash", help: L("Delete", "Hapus"), action: onDelete)
                     .opacity(showActions ? 1 : 0)
                     .disabled(!showActions)
             }
@@ -260,26 +264,26 @@ final class Updater {
                 guard Self.isNewer(latest, than: currentVersion),
                       let asset = rel.assets.first(where: { $0.name.hasSuffix(".dmg") }),
                       let url = URL(string: asset.browser_download_url) else {
-                    status = "Sudah versi terbaru"
-                    if manual { Self.alert("ClipHistory sudah versi terbaru (v\(currentVersion)).") }
+                    status = L("Up to date", "Sudah versi terbaru")
+                    if manual { Self.alert(L("ClipHistory is up to date (v\(currentVersion)).", "ClipHistory sudah versi terbaru (v\(currentVersion)).")) }
                     return
                 }
 
                 let appPath = Bundle.main.bundlePath
                 if appPath.contains("/AppTranslocation/") || appPath.hasPrefix("/Volumes/") {
-                    status = "Pindahkan app ke Applications untuk update"
-                    if manual { Self.alert("Pindahkan ClipHistory ke folder Applications dulu supaya bisa update otomatis.") }
+                    status = L("Move the app to Applications to update", "Pindahkan app ke Applications untuk update")
+                    if manual { Self.alert(L("Move ClipHistory to the Applications folder so it can update itself.", "Pindahkan ClipHistory ke folder Applications dulu supaya bisa update otomatis.")) }
                     return
                 }
 
-                status = "Mengunduh v\(latest)…"
+                status = L("Downloading v\(latest)…", "Mengunduh v\(latest)…")
                 let (tmp, _) = try await URLSession.shared.download(from: url)
                 let target = URL(fileURLWithPath: appPath)
                 try await Task.detached { try Self.install(dmgAt: tmp, replacing: target) }.value
                 Self.relaunch(target)
             } catch {
-                status = "Gagal update"
-                if manual { Self.alert("Gagal cek update: \(error.localizedDescription)") }
+                status = L("Update failed", "Gagal update")
+                if manual { Self.alert(L("Couldn't check for updates: ", "Gagal cek update: ") + error.localizedDescription) }
             }
         }
     }
@@ -321,7 +325,7 @@ final class Updater {
         p.waitUntilExit()
         if p.terminationStatus != 0 {
             throw NSError(domain: "ClipHistory", code: Int(p.terminationStatus),
-                          userInfo: [NSLocalizedDescriptionKey: "\(path) gagal (\(p.terminationStatus))"])
+                          userInfo: [NSLocalizedDescriptionKey: "\(path) " + L("failed", "gagal") + " (\(p.terminationStatus))"])
         }
     }
 
@@ -525,30 +529,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
 
-        let open = NSMenuItem(title: "Buka Clipboard", action: #selector(showPanel), keyEquivalent: "v")
+        let open = NSMenuItem(title: L("Open Clipboard", "Buka Clipboard"), action: #selector(showPanel), keyEquivalent: "v")
         open.keyEquivalentModifierMask = [.command, .shift]
         open.target = self
         menu.addItem(open)
         menu.addItem(.separator())
 
         if !AXIsProcessTrusted() {
-            let ax = NSMenuItem(title: "Aktifkan Auto-Paste…", action: #selector(requestAccessibility), keyEquivalent: "")
+            let ax = NSMenuItem(title: L("Enable Auto-Paste…", "Aktifkan Auto-Paste…"), action: #selector(requestAccessibility), keyEquivalent: "")
             ax.target = self
             menu.addItem(ax)
         }
 
-        let login = NSMenuItem(title: "Buka saat Login", action: #selector(toggleLogin(_:)), keyEquivalent: "")
+        let login = NSMenuItem(title: L("Open at Login", "Buka saat Login"), action: #selector(toggleLogin(_:)), keyEquivalent: "")
         login.target = self
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(login)
 
-        let clear = NSMenuItem(title: "Hapus Semua (kecuali pin)", action: #selector(clearAll), keyEquivalent: "")
+        let clear = NSMenuItem(title: L("Clear All (except pinned)", "Hapus Semua (kecuali pin)"), action: #selector(clearAll), keyEquivalent: "")
         clear.target = self
         menu.addItem(clear)
 
         menu.addItem(.separator())
 
-        let version = NSMenuItem(title: "Versi \(updater.currentVersion)", action: nil, keyEquivalent: "")
+        let version = NSMenuItem(title: L("Version", "Versi") + " \(updater.currentVersion)", action: nil, keyEquivalent: "")
         version.isEnabled = false
         menu.addItem(version)
 
@@ -558,12 +562,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             menu.addItem(st)
         }
 
-        let upd = NSMenuItem(title: "Cek Update", action: #selector(manualUpdate), keyEquivalent: "")
+        let upd = NSMenuItem(title: L("Check for Updates", "Cek Update"), action: #selector(manualUpdate), keyEquivalent: "")
         upd.target = self
         menu.addItem(upd)
 
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Keluar", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let quit = NSMenuItem(title: L("Quit", "Keluar"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp
         menu.addItem(quit)
     }

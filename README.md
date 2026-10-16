@@ -44,6 +44,7 @@ GitHub Actions akan build DMG dan menaruhnya di Releases otomatis.
 • Teks dari password manager otomatis diabaikan
 • Riwayat tersimpan di `~/Library/Application Support/ClipHistory/history.json`
 • Opsi "Buka saat Login"
+• Bahasa mengikuti macOS: Indonesia kalau Mac berbahasa Indonesia, selain itu Inggris
 
 ## Update otomatis
 
