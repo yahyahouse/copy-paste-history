@@ -156,7 +156,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         store.add(s)
 
         if openedByHotKey && AXIsProcessTrusted() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { self.pasteToFrontApp() }
+            perform(#selector(pasteToFrontApp), with: nil, afterDelay: 0.05)
         }
     }
 
@@ -177,12 +177,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func requestAccessibility() {
-        let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        let opts = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(opts)
     }
 
     // MARK: Paste otomatis (Cmd+V ke aplikasi aktif)
-    func pasteToFrontApp() {
+    @objc func pasteToFrontApp() {
         let src = CGEventSource(stateID: .combinedSessionState)
         let v = CGKeyCode(kVK_ANSI_V)
         let down = CGEvent(keyboardEventSource: src, virtualKey: v, keyDown: true)
@@ -198,16 +198,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let menu = statusItem.menu else { return }
         openedByHotKey = true
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
-        DispatchQueue.main.async { self.openedByHotKey = false }
+        perform(#selector(resetHotKeyFlag), with: nil, afterDelay: 0.1)
     }
+
+    @objc func resetHotKeyFlag() { openedByHotKey = false }
 
     func registerHotKey() {
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
                                  eventKind: UInt32(kEventHotKeyPressed))
         InstallEventHandler(GetApplicationEventTarget(), { _, _, userData in
             guard let userData else { return noErr }
-            let me = Unmanaged<AppDelegate>.fromOpaque(userData).takeUnretainedValue()
-            DispatchQueue.main.async { me.showMenuAtMouse() }
+            // Carbon hotkey handler selalu jalan di main thread
+            MainActor.assumeIsolated {
+                Unmanaged<AppDelegate>.fromOpaque(userData).takeUnretainedValue().showMenuAtMouse()
+            }
             return noErr
         }, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), nil)
 
@@ -217,8 +221,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 }
 
 // MARK: - Entry point
-let app = NSApplication.shared
-let delegate = AppDelegate()
-app.delegate = delegate
-app.setActivationPolicy(.accessory)
-app.run()
+MainActor.assumeIsolated {
+    let app = NSApplication.shared
+    let delegate = AppDelegate()
+    app.delegate = delegate
+    app.setActivationPolicy(.accessory)
+    app.run()
+}

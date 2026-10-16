@@ -12,7 +12,15 @@ mkdir dmg
 cp -R ClipHistory.app dmg/
 ln -s /Applications dmg/Applications
 
-hdiutil create -volname "ClipHistory" -srcfolder dmg -ov -format UDZO "$DMG"
+# hdiutil kadang gagal "Resource busy", coba ulang beberapa kali
+for i in 1 2 3 4 5; do
+  if hdiutil create -volname "ClipHistory" -srcfolder dmg -ov -format UDZO "$DMG"; then
+    break
+  fi
+  echo "hdiutil gagal, coba lagi ($i)..."
+  sleep 5
+  [ "$i" = 5 ] && exit 1
+done
 rm -rf dmg
 
 echo "DMG: $(pwd)/$DMG"
