@@ -35,10 +35,12 @@ GitHub Actions akan build DMG dan menaruhnya di Releases otomatis.
 
 ## Fitur
 
-• Riwayat 50 teks terakhir, tanpa duplikat
-• Cmd+Shift+V membuka menu di posisi kursor, item yang dipilih langsung di-paste
-• Tombol 1–9 untuk pilih cepat
-• Option+klik item untuk menghapusnya
+• Panel popup seperti Win+V di Windows, muncul di posisi kursor dengan Cmd+Shift+V
+• Klik item atau tekan Enter untuk langsung paste
+• Pin item penting supaya tidak ikut terhapus
+• Tombol hapus di tiap item, plus "Hapus semua" untuk item yang tidak di-pin
+• Navigasi keyboard: ↑↓ pilih, 1–9 pilih cepat, Delete hapus, Esc tutup
+• Menyimpan 50 item terakhir (item yang di-pin tidak dihitung)
 • Teks dari password manager otomatis diabaikan
 • Riwayat tersimpan di `~/Library/Application Support/ClipHistory/history.json`
 • Opsi "Buka saat Login"
