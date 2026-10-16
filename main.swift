@@ -27,7 +27,7 @@ struct Clip: Codable, Identifiable, Equatable {
     var isImage: Bool { image != nil }
 }
 
-let maxImageBytes = 25 * 1024 * 1024
+let maxImageBytes = 60 * 1024 * 1024
 
 @MainActor
 final class Store: ObservableObject {
@@ -509,13 +509,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
 
         // Gambar: screenshot ke clipboard, copy image dari browser, dll.
-        if let png = pb.data(forType: .png) {
-            store.addImage(png: png)
-        } else if let tiff = pb.data(forType: .tiff), tiff.count <= maxImageBytes * 2,
-                  let rep = NSBitmapImageRep(data: tiff),
-                  let png = rep.representation(using: .png, properties: [:]) {
+        if let png = imagePNG(from: pb) {
             store.addImage(png: png)
         }
+    }
+
+    // Ambil gambar dari clipboard dalam bentuk PNG (PNG, TIFF screenshot, JPEG, HEIC, dll.)
+    func imagePNG(from pb: NSPasteboard) -> Data? {
+        if let png = pb.data(forType: .png) { return png }
+
+        // Screenshot macOS sering berupa TIFF tanpa kompresi, bisa puluhan MB di layar besar
+        if let tiff = pb.data(forType: .tiff), tiff.count <= 300 * 1024 * 1024,
+           let rep = NSBitmapImageRep(data: tiff),
+           let png = rep.representation(using: .png, properties: [:]) {
+            return png
+        }
+
+        // Format lain (JPEG, HEIC, PDF, dll.) lewat NSImage
+        if pb.canReadObject(forClasses: [NSImage.self], options: nil),
+           let img = NSImage(pasteboard: pb),
+           let tiff = img.tiffRepresentation,
+           let rep = NSBitmapImageRep(data: tiff),
+           let png = rep.representation(using: .png, properties: [:]) {
+            return png
+        }
+        return nil
     }
 
     // MARK: Panel
