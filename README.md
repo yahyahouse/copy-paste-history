@@ -2,9 +2,25 @@
 
 A lightweight clipboard history app for macOS that lives in your menu bar. Native Swift + AppKit, no dependencies.
 
+## Install with Homebrew
+
+```bash
+brew tap yahyahouse/clip-history https://github.com/yahyahouse/copy-paste-history
+brew install --cask clip-history
+```
+
+That's it, no Gatekeeper warning to click through. The app keeps itself up to date after that.
+
+To uninstall:
+
+```bash
+brew uninstall --cask clip-history          # keep your history
+brew uninstall --cask --zap clip-history    # also delete your history
+```
+
 ## Download
 
-Grab the latest `.dmg` from [Releases](https://github.com/yahyahouse/copy-paste-history/releases/latest), open it, and drag Clip History into Applications.
+Or grab the latest `.dmg` from [Releases](https://github.com/yahyahouse/copy-paste-history/releases/latest), open it, and drag Clip History into Applications.
 
 The app isn't notarized by Apple yet, so macOS will warn you the first time you open it. Run this once:
 

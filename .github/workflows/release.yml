@@ -16,6 +16,8 @@ permissions:
 jobs:
   build:
     runs-on: macos-14
+    outputs:
+      sha256: ${{ steps.sum.outputs.sha256 }}
     env:
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
       GH_TOKEN: ${{ github.token }}
@@ -57,5 +59,31 @@ jobs:
 
       - name: Upload to release
         run: |
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "ClipHistory $TAG" --generate-notes
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "Clip History $TAG" --generate-notes
           gh release upload "$TAG" ClipHistory-*.dmg --clobber
+
+      - name: Checksum
+        id: sum
+        run: echo "sha256=$(shasum -a 256 ClipHistory-*.dmg | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+  homebrew:
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      SHA: ${{ needs.build.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Update cask
+        run: |
+          VERSION="${TAG#v}"
+          sed -i -e "s/^  version \".*\"/  version \"$VERSION\"/" \
+                 -e "s/^  sha256 \".*\"/  sha256 \"$SHA\"/" Casks/clip-history.rb
+          if git diff --quiet; then exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Update cask to $VERSION"
+          git push origin main
