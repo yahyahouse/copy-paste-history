@@ -1,2 +1,5 @@
 ClipHistory.app/
+*.dmg
+dmg/
+build/
 .DS_Store

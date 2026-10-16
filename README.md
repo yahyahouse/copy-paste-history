@@ -2,16 +2,36 @@
 
 Aplikasi menu bar macOS yang ringan untuk riwayat copy. Native Swift + AppKit, tanpa dependency.
 
-## Build
+## Download
+
+Ambil file `.dmg` terbaru di halaman [Releases](https://github.com/yahyahouse/copy-paste-history/releases/latest), buka, lalu seret ClipHistory ke folder Applications.
+
+Karena app belum di-notarize Apple, saat pertama dibuka akan muncul peringatan. Jalankan sekali:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/ClipHistory.app
+```
+
+Atau klik kanan app → Open → Open.
+
+Butuh macOS 13+, jalan di Apple Silicon dan Intel.
+
+## Build sendiri
 
 ```bash
 xcode-select --install   # kalau belum ada
-./build.sh
-mv ClipHistory.app /Applications/
-open /Applications/ClipHistory.app
+./build.sh               # hasil: ClipHistory.app
+./make-dmg.sh 1.0.0      # hasil: ClipHistory-1.0.0.dmg
 ```
 
-Butuh macOS 13+.
+## Rilis versi baru
+
+```bash
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+GitHub Actions akan build DMG dan menaruhnya di Releases otomatis.
 
 ## Fitur
 
