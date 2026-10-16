@@ -265,14 +265,14 @@ final class Updater {
                       let asset = rel.assets.first(where: { $0.name.hasSuffix(".dmg") }),
                       let url = URL(string: asset.browser_download_url) else {
                     status = L("Up to date", "Sudah versi terbaru")
-                    if manual { Self.alert(L("ClipHistory is up to date (v\(currentVersion)).", "ClipHistory sudah versi terbaru (v\(currentVersion)).")) }
+                    if manual { Self.alert(L("Clip History is up to date (v\(currentVersion)).", "Clip History sudah versi terbaru (v\(currentVersion)).")) }
                     return
                 }
 
                 let appPath = Bundle.main.bundlePath
                 if appPath.contains("/AppTranslocation/") || appPath.hasPrefix("/Volumes/") {
                     status = L("Move the app to Applications to update", "Pindahkan app ke Applications untuk update")
-                    if manual { Self.alert(L("Move ClipHistory to the Applications folder so it can update itself.", "Pindahkan ClipHistory ke folder Applications dulu supaya bisa update otomatis.")) }
+                    if manual { Self.alert(L("Move Clip History to the Applications folder so it can update itself.", "Pindahkan Clip History ke folder Applications dulu supaya bisa update otomatis.")) }
                     return
                 }
 
@@ -340,7 +340,7 @@ final class Updater {
     static func alert(_ text: String) {
         NSApp.activate(ignoringOtherApps: true)
         let a = NSAlert()
-        a.messageText = "ClipHistory"
+        a.messageText = "Clip History"
         a.informativeText = text
         a.runModal()
     }
@@ -366,7 +366,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "doc.on.clipboard",
-                                           accessibilityDescription: "ClipHistory")
+                                           accessibilityDescription: "Clip History")
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu

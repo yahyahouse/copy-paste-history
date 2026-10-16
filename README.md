@@ -1,4 +1,4 @@
-# ClipHistory
+# Clip History
 
 Aplikasi menu bar macOS yang ringan untuk riwayat copy. Native Swift + AppKit, tanpa dependency.
 

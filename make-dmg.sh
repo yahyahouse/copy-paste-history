@@ -20,7 +20,7 @@ ln -s /Applications dmg/Applications
 
 # hdiutil kadang gagal "Resource busy", coba ulang beberapa kali
 for i in 1 2 3 4 5; do
-  if hdiutil create -volname "ClipHistory" -srcfolder dmg -ov -format UDZO "$DMG"; then
+  if hdiutil create -volname "Clip History" -srcfolder dmg -ov -format UDZO "$DMG"; then
     break
   fi
   echo "hdiutil gagal, coba lagi ($i)..."

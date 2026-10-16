@@ -25,6 +25,10 @@
         <string>en</string>
         <string>id</string>
     </array>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>LSHasLocalizedDisplayName</key>
+    <true/>
     <key>LSUIElement</key>
     <true/>
     <key>NSHighResolutionCapable</key>
