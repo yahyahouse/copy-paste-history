@@ -6,8 +6,10 @@ import CryptoKit
 import ImageIO
 
 // MARK: - Konfigurasi
-let maxItems = 10                               // total item (pin + biasa)
+let defaultMaxItems = 10                        // default total item (pin + biasa), bisa diubah dari menu
+let historySizeOptions = [10, 20, 50, 100, 200] // pilihan di menu "History Size"
 let maxPins = 7                                 // maksimal item yang di-pin
+let maxTextBytes = 2 * 1024 * 1024              // teks lebih besar dari ini tidak disimpan
 let hotKeyCode = UInt32(kVK_ANSI_V)             // tombol V
 let hotKeyModifiers = UInt32(cmdKey | shiftKey) // Cmd + Shift
 let panelSize = NSSize(width: 360, height: 440)
@@ -32,43 +34,126 @@ let maxImageBytes = 60 * 1024 * 1024
 @MainActor
 final class Store: ObservableObject {
     @Published private(set) var items: [Clip] = []
+    @Published private(set) var limit: Int
     @Published var selected = 0
     @Published var keyboardMoves = 0
     private let url: URL
     let imagesDir: URL
-    private var thumbs: [String: NSImage] = [:]
+    // Semua tulis/hapus file jalan berurutan di background supaya UI tidak tersendat
+    private let io = DispatchQueue(label: "com.yahyawijaya.cliphistory.io", qos: .utility)
+    private let thumbs = NSCache<NSString, NSImage>()
+    private var sizes: [String: String] = [:]
+    private var knownImages = Set<String>()   // gambar yang sedang dipakai items
 
     init() {
+        let saved = UserDefaults.standard.integer(forKey: "maxItems")
+        limit = saved > 0 ? min(saved, 1000) : defaultMaxItems
+        thumbs.countLimit = 40
+
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("ClipHistory", isDirectory: true)
         imagesDir = dir.appendingPathComponent("images", isDirectory: true)
         try? FileManager.default.createDirectory(at: imagesDir, withIntermediateDirectories: true)
         url = dir.appendingPathComponent("history.json")
 
-        guard let data = try? Data(contentsOf: url) else { return }
-        if let clips = try? JSONDecoder().decode([Clip].self, from: data) {
-            items = clips
-        } else if let old = try? JSONDecoder().decode([String].self, from: data) {
-            items = old.map { Clip(text: $0) } // format versi 1.0.x
+        if let data = try? Data(contentsOf: url) {
+            if let clips = try? JSONDecoder().decode([Clip].self, from: data) {
+                items = clips
+            } else if let old = try? JSONDecoder().decode([String].self, from: data) {
+                items = old.map { Clip(text: $0) } // format versi 1.0.x
+            }
         }
         items.removeAll { $0.isImage && !FileManager.default.fileExists(atPath: imageURL($0.image!).path) }
         trim()
-        cleanupImages()
+        knownImages = Set(items.compactMap(\.image))
+
+        // Bersihkan file gambar yatim sekali saat start
+        let used = knownImages, imagesDir = imagesDir
+        io.async {
+            let files = (try? FileManager.default.contentsOfDirectory(atPath: imagesDir.path)) ?? []
+            for f in files where !used.contains(f) {
+                try? FileManager.default.removeItem(at: imagesDir.appendingPathComponent(f))
+            }
+        }
+    }
+
+    // MARK: Jumlah riwayat
+    func setLimit(_ n: Int) {
+        limit = n
+        UserDefaults.standard.set(n, forKey: "maxItems")
+        trim()
+        selected = max(0, min(selected, items.count - 1))
+        save()
+    }
+
+    // Berapa item biasa yang akan terhapus kalau limit jadi n
+    func overflow(for n: Int) -> Int {
+        let unpinned = items.count - pinCount
+        return max(0, unpinned - max(0, n - pinCount))
     }
 
     // MARK: Tambah
     func add(_ s: String) {
+        guard s.utf8.count <= maxTextBytes else { return }
         insert(Clip(text: s)) { !$0.isImage && $0.text == s }
     }
 
-    func addImage(png: Data) {
-        guard png.count <= maxImageBytes else { return }
-        let name = SHA256.hash(data: png).map { String(format: "%02x", $0) }.joined() + ".png"
-        let file = imageURL(name)
-        if !FileManager.default.fileExists(atPath: file.path) {
-            guard (try? png.write(to: file, options: .atomic)) != nil else { return }
+    // raw = PNG kalau isPNG, selain itu format apa pun yang dibaca ImageIO (TIFF, JPEG, HEIC, ...)
+    func addImage(_ raw: Data, isPNG: Bool) {
+        let dir = imagesDir
+        io.async { [weak self] in
+            guard let png = isPNG ? raw : Self.toPNG(raw), png.count <= maxImageBytes else { return }
+            let name = SHA256.hash(data: png).map { String(format: "%02x", $0) }.joined() + ".png"
+            let file = dir.appendingPathComponent(name)
+            if !FileManager.default.fileExists(atPath: file.path) {
+                guard (try? png.write(to: file, options: .atomic)) != nil else { return }
+            }
+            let preview = CGImageSourceCreateWithData(png as CFData, nil).map(Self.preview)
+            Task { @MainActor in
+                self?.finishImage(name, png: png, preview: preview)
+            }
+        }
+    }
+
+    private func finishImage(_ name: String, png: Data, preview: (CGImage?, String)?) {
+        if let (cg, info) = preview {
+            sizes[name] = info
+            if let cg { thumbs.setObject(NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height)), forKey: name as NSString) }
+        }
+        // File bisa saja sempat dihapus antrean io sebelum item ini masuk lagi, tulis ulang kalau hilang
+        if !knownImages.contains(name) {
+            let file = imageURL(name)
+            io.async {
+                if !FileManager.default.fileExists(atPath: file.path) { try? png.write(to: file, options: .atomic) }
+            }
         }
         insert(Clip(text: "", image: name)) { $0.image == name }
+    }
+
+    nonisolated static func toPNG(_ data: Data) -> Data? {
+        guard let src = CGImageSourceCreateWithData(data as CFData, nil),
+              let img = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return nil }
+        let out = NSMutableData()
+        guard let dst = CGImageDestinationCreateWithData(out, "public.png" as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(dst, img, nil)
+        return CGImageDestinationFinalize(dst) ? out as Data : nil
+    }
+
+    // Thumbnail kecil (cukup untuk tinggi 90pt @2x) + teks ukuran "W×H"
+    nonisolated static func preview(_ src: CGImageSource) -> (CGImage?, String) {
+        var w = 0, h = 0
+        if let p = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any] {
+            w = p[kCGImagePropertyPixelWidth] as? Int ?? 0
+            h = p[kCGImagePropertyPixelHeight] as? Int ?? 0
+        }
+        let maxPx = (w >= h && h > 0) ? min(580, Int((180 * Double(w) / Double(h)).rounded(.up))) : 180
+        let opts: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(maxPx, 64),
+        ]
+        return (CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary), w > 0 ? "\(w)×\(h)" : "")
     }
 
     func bump(_ id: UUID) {
@@ -99,39 +184,24 @@ final class Store: ObservableObject {
     }
 
     func thumbnail(_ name: String) -> NSImage? {
-        if let t = thumbs[name] { return t }
+        if let t = thumbs.object(forKey: name as NSString) { return t }
         guard let src = CGImageSourceCreateWithURL(imageURL(name) as CFURL, nil) else { return nil }
-        let opts: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: 640,
-        ]
-        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
+        let (cg, info) = Self.preview(src)
+        sizes[name] = info
+        guard let cg else { return nil }
         let img = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
-        thumbs[name] = img
+        thumbs.setObject(img, forKey: name as NSString)
         return img
     }
 
     func imageSize(_ name: String) -> String {
-        guard let src = CGImageSourceCreateWithURL(imageURL(name) as CFURL, nil),
-              let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
-              let w = props[kCGImagePropertyPixelWidth] as? Int,
-              let h = props[kCGImagePropertyPixelHeight] as? Int else { return "" }
-        return "\(w)×\(h)"
-    }
-
-    // Hapus file gambar yang sudah tidak dipakai
-    private func cleanupImages() {
-        let used = Set(items.compactMap(\.image))
-        let files = (try? FileManager.default.contentsOfDirectory(atPath: imagesDir.path)) ?? []
-        for f in files where !used.contains(f) {
-            try? FileManager.default.removeItem(at: imageURL(f))
-            thumbs[f] = nil
-        }
+        if let s = sizes[name] { return s }
+        _ = thumbnail(name)
+        return sizes[name] ?? ""
     }
 
     // MARK: Pin & hapus
-    var pinCount: Int { items.filter(\.pinned).count }
+    var pinCount: Int { items.reduce(0) { $0 + ($1.pinned ? 1 : 0) } }
     var canPinMore: Bool { pinCount < maxPins }
 
     func togglePin(_ id: UUID) {
@@ -164,7 +234,8 @@ final class Store: ObservableObject {
 
     // Sisa slot setelah pin dipakai item biasa, yang paling lama dibuang
     private func trim() {
-        let slots = max(0, maxItems - pinCount)
+        let slots = max(0, limit - pinCount)
+        guard items.count - pinCount > slots else { return }
         var unpinned = 0
         items = items.filter { c in
             if c.pinned { return true }
@@ -173,11 +244,27 @@ final class Store: ObservableObject {
         }
     }
 
+    // Tunggu semua tulis file selesai (dipanggil sebelum app keluar)
+    func flush() { io.sync {} }
+
+    // Simpan JSON + hapus file gambar yang tidak dipakai lagi, di background
     private func save() {
-        if let data = try? JSONEncoder().encode(items) {
-            try? data.write(to: url, options: .atomic)
+        let snapshot = items, url = url, dir = imagesDir
+        let used = Set(items.compactMap(\.image))
+        let removed = knownImages.subtracting(used)
+        knownImages = used
+        for name in removed {
+            thumbs.removeObject(forKey: name as NSString)
+            sizes[name] = nil
         }
-        cleanupImages()
+        io.async {
+            if let data = try? JSONEncoder().encode(snapshot) {
+                try? data.write(to: url, options: .atomic)
+            }
+            for name in removed {
+                try? FileManager.default.removeItem(at: dir.appendingPathComponent(name))
+            }
+        }
     }
 }
 
@@ -190,7 +277,7 @@ struct ClipboardView: View {
         VStack(spacing: 0) {
             HStack {
                 Text("Clipboard").font(.system(size: 13, weight: .semibold))
-                Text("\(store.pinCount)/\(maxPins) " + L("pinned", "pin"))
+                Text("\(store.items.count)/\(store.limit)  ·  \(store.pinCount)/\(maxPins) " + L("pinned", "pin"))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -216,6 +303,7 @@ struct ClipboardView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
+                let canPinMore = store.canPinMore
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: 6) {
@@ -223,7 +311,7 @@ struct ClipboardView: View {
                                 ClipRow(
                                     clip: clip,
                                     selected: i == store.selected,
-                                    canPin: clip.pinned || store.canPinMore,
+                                    canPin: clip.pinned || canPinMore,
                                     thumbnail: clip.image.flatMap { store.thumbnail($0) },
                                     imageInfo: clip.image.map { store.imageSize($0) } ?? "",
                                     onPin: { store.togglePin(clip.id) },
@@ -284,7 +372,8 @@ struct ClipRow: View {
                             .foregroundStyle(.secondary)
                     }
                 } else {
-                    Text(String(clip.text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(400)))
+                    // Potong dulu baru trim, supaya teks besar tidak diproses penuh tiap render
+                    Text(String(clip.text.prefix(600)).trimmingCharacters(in: .whitespacesAndNewlines))
                         .font(.system(size: 12))
                         .lineLimit(3)
                 }
@@ -449,6 +538,19 @@ final class ClipPanel: NSPanel {
     override var canBecomeKey: Bool { true }
 }
 
+// Buat TIFF dari PNG hanya saat diminta app tujuan paste
+final class LazyTIFF: NSObject, NSPasteboardItemDataProvider {
+    let png: Data
+    init(png: Data) { self.png = png }
+
+    func pasteboard(_ pasteboard: NSPasteboard?, item: NSPasteboardItem, provideDataForType type: NSPasteboard.PasteboardType) {
+        guard type == .tiff, let tiff = NSBitmapImageRep(data: png)?.tiffRepresentation else { return }
+        item.setData(tiff, forType: .tiff)
+    }
+
+    func pasteboardFinishedWithDataProvider(_ pasteboard: NSPasteboard) {}
+}
+
 // MARK: - App
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWindowDelegate {
@@ -460,6 +562,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     var hotKeyRef: EventHotKeyRef?
     var keyMonitor: Any?
     var clickMonitor: Any?
+    var tiffProvider: LazyTIFF?
+
+    func applicationWillTerminate(_ notification: Notification) { store.flush() }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -509,31 +614,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         }
 
         // Gambar: screenshot ke clipboard, copy image dari browser, dll.
-        if let png = imagePNG(from: pb) {
-            store.addImage(png: png)
+        // Data diambil di sini, konversi ke PNG + simpan jalan di background
+        if let png = pb.data(forType: .png) {
+            store.addImage(png, isPNG: true)
+        } else if let tiff = pb.data(forType: .tiff) {
+            // Screenshot macOS sering berupa TIFF tanpa kompresi, bisa puluhan MB di layar besar
+            if tiff.count <= 300 * 1024 * 1024 { store.addImage(tiff, isPNG: false) }
+        } else if pb.canReadObject(forClasses: [NSImage.self], options: nil),
+                  let tiff = NSImage(pasteboard: pb)?.tiffRepresentation {
+            // Format lain (JPEG, HEIC, PDF, dll.) lewat NSImage
+            store.addImage(tiff, isPNG: false)
         }
-    }
-
-    // Ambil gambar dari clipboard dalam bentuk PNG (PNG, TIFF screenshot, JPEG, HEIC, dll.)
-    func imagePNG(from pb: NSPasteboard) -> Data? {
-        if let png = pb.data(forType: .png) { return png }
-
-        // Screenshot macOS sering berupa TIFF tanpa kompresi, bisa puluhan MB di layar besar
-        if let tiff = pb.data(forType: .tiff), tiff.count <= 300 * 1024 * 1024,
-           let rep = NSBitmapImageRep(data: tiff),
-           let png = rep.representation(using: .png, properties: [:]) {
-            return png
-        }
-
-        // Format lain (JPEG, HEIC, PDF, dll.) lewat NSImage
-        if pb.canReadObject(forClasses: [NSImage.self], options: nil),
-           let img = NSImage(pasteboard: pb),
-           let tiff = img.tiffRepresentation,
-           let rep = NSBitmapImageRep(data: tiff),
-           let png = rep.representation(using: .png, properties: [:]) {
-            return png
-        }
-        return nil
     }
 
     // MARK: Panel
@@ -626,11 +717,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         pb.clearContents()
         if clip.isImage {
             guard let png = store.imageData(clip) else { NSSound.beep(); return }
-            pb.declareTypes([.png, .tiff], owner: nil)
-            pb.setData(png, forType: .png)
-            if let tiff = NSBitmapImageRep(data: png)?.tiffRepresentation {
-                pb.setData(tiff, forType: .tiff)
-            }
+            // PNG langsung, TIFF baru dibuat kalau app tujuan memintanya
+            let item = NSPasteboardItem()
+            item.setData(png, forType: .png)
+            let provider = LazyTIFF(png: png)
+            item.setDataProvider(provider, forTypes: [.tiff])
+            tiffProvider = provider
+            pb.writeObjects([item])
         } else {
             pb.setString(clip.text, forType: .string)
         }
@@ -683,6 +776,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         login.state = SMAppService.mainApp.status == .enabled ? .on : .off
         menu.addItem(login)
 
+        let size = NSMenuItem(title: L("History Size", "Jumlah Riwayat") + " (\(store.limit))", action: nil, keyEquivalent: "")
+        let sizeMenu = NSMenu()
+        for n in historySizeOptions {
+            let it = NSMenuItem(title: L("\(n) items", "\(n) item"), action: #selector(setHistorySize(_:)), keyEquivalent: "")
+            it.target = self
+            it.tag = n
+            it.state = n == store.limit ? .on : .off
+            sizeMenu.addItem(it)
+        }
+        size.submenu = sizeMenu
+        menu.addItem(size)
+
         let clear = NSMenuItem(title: L("Clear All (except pinned)", "Hapus Semua (kecuali pin)"), action: #selector(clearAll), keyEquivalent: "")
         clear.target = self
         menu.addItem(clear)
@@ -710,6 +815,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     }
 
     @objc func clearAll() { store.clearUnpinned() }
+
+    @objc func setHistorySize(_ sender: NSMenuItem) {
+        let n = sender.tag
+        guard n != store.limit else { return }
+        let lost = store.overflow(for: n)
+        if lost > 0 {
+            NSApp.activate(ignoringOtherApps: true)
+            let a = NSAlert()
+            a.messageText = L("Keep only \(n) items?", "Simpan hanya \(n) item?")
+            a.informativeText = L("The \(lost) oldest unpinned items will be deleted.",
+                                  "\(lost) item terlama yang tidak di-pin akan dihapus.")
+            a.addButton(withTitle: L("Delete", "Hapus"))
+            a.addButton(withTitle: L("Cancel", "Batal"))
+            guard a.runModal() == .alertFirstButtonReturn else { return }
+        }
+        store.setLimit(n)
+    }
 
     @objc func toggleLogin(_ sender: NSMenuItem) {
         do {

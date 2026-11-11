@@ -14,9 +14,11 @@ for ARCH in arm64 x86_64; do
   swiftc -O -swift-version 5 main.swift \
     -target "$ARCH-apple-macos13.0" \
     -o "build/ClipHistory-$ARCH" \
-    -framework Cocoa -framework SwiftUI -framework Carbon -framework ServiceManagement
+    -framework Cocoa -framework SwiftUI -framework Carbon -framework ServiceManagement \
+    -Xlinker -dead_strip
 done
 lipo -create build/ClipHistory-arm64 build/ClipHistory-x86_64 -output "$BIN"
+strip -x "$BIN"   # buang simbol debug, binary lebih kecil
 rm -rf build
 
 cp Info.plist "$APP/Contents/"

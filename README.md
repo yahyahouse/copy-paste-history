@@ -40,7 +40,8 @@ Requires macOS 13 or later. Runs on both Apple Silicon and Intel.
 • Pin important items so they never get removed
 • Delete button on every item, plus "Clear all" for everything that isn't pinned
 • Keyboard navigation: ↑↓ to select, 1–9 for quick pick, Delete to remove, Esc to close
-• Keeps up to 10 items, up to 7 of them pinned. The oldest unpinned item is removed when you copy something new
+• Keeps 10 items by default (change it under "History Size" in the menu: 10, 20, 50, 100 or 200), up to 7 of them pinned. The oldest unpinned item is removed when you copy something new
+• Light on resources: saving, image conversion and cleanup run in the background, thumbnails are small and cached with a limit, and text over 2 MB is skipped
 • Ignores text copied from password managers
 • History is saved to `~/Library/Application Support/ClipHistory/` (`history.json` plus an `images` folder), so it survives restarts
 • Optional "Open at Login"
@@ -85,4 +86,4 @@ Signing uses two repository secrets: `SIGNING_CERT_P12` (base64 of the .p12) and
 
 ## Configuration
 
-Tweak the constants at the top of `main.swift`: number of items, number of pins, and the hotkey.
+History size is set from the menu bar ("History Size") and remembered across restarts. Other constants live at the top of `main.swift`: default history size and menu options, number of pins, max text size, and the hotkey.
