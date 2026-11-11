@@ -1,6 +1,6 @@
 cask "clip-history" do
-  version "1.6.1"
-  sha256 "ff07e4908efef869a060b51837e4a9611457d47fd51757f1cb7ad477ddd884be"
+  version "1.7.0"
+  sha256 "4843929db6c64d366a67f886d2cd548f0da0dd81b8df53f770f4a7a87f209fe5"
 
   url "https://github.com/yahyahouse/copy-paste-history/releases/download/v#{version}/ClipHistory-#{version}.dmg"
   name "Clip History"
