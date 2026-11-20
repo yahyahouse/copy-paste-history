@@ -38,9 +38,11 @@ Requires macOS 13 or later. Runs on both Apple Silicon and Intel.
 • Click an item or press Enter to paste it right away
 • Saves images too: screenshots copied to the clipboard (Cmd+Ctrl+Shift+4), images copied from a browser or any app
 • Pin important items so they never get removed
+• Edit text items: click the pencil button, press E, or right-click → Edit. Save with Cmd+S, or "Save & Paste" with Cmd+Return. You're asked before unsaved changes are thrown away
+• Right-click any item for Paste, Copy Only, Edit, Pin and Delete
 • Delete button on every item, plus "Clear all" for everything that isn't pinned
-• Keyboard navigation: ↑↓ to select, 1–9 for quick pick, Delete to remove, Esc to close
-• Keeps 10 items by default (change it under "History Size" in the menu: 10, 20, 50, 100 or 200), up to 7 of them pinned. The oldest unpinned item is removed when you copy something new
+• Keyboard navigation: ↑↓ to select, 1–9 for quick pick, E to edit, Delete to remove, Esc to close
+• Keeps 10 items by default (change it under "History Size" in the menu: 10, 20, 50, 100, 200, or "Custom…" for any number from 1 to 1000, which shows how many old clips would be removed before you save), up to 7 of them pinned. The oldest unpinned item is removed when you copy something new
 • Light on resources: saving, image conversion and cleanup run in the background, thumbnails are small and cached with a limit, and text over 2 MB is skipped
 • Ignores text copied from password managers
 • History is saved to `~/Library/Application Support/ClipHistory/` (`history.json` plus an `images` folder), so it survives restarts

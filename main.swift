@@ -8,6 +8,7 @@ import ImageIO
 // MARK: - Konfigurasi
 let defaultMaxItems = 10                        // default total item (pin + biasa), bisa diubah dari menu
 let historySizeOptions = [10, 20, 50, 100, 200] // pilihan di menu "History Size"
+let maxHistorySize = 1000                       // batas atas untuk ukuran custom
 let maxPins = 7                                 // maksimal item yang di-pin
 let maxTextBytes = 2 * 1024 * 1024              // teks lebih besar dari ini tidak disimpan
 let hotKeyCode = UInt32(kVK_ANSI_V)             // tombol V
@@ -47,7 +48,7 @@ final class Store: ObservableObject {
 
     init() {
         let saved = UserDefaults.standard.integer(forKey: "maxItems")
-        limit = saved > 0 ? min(saved, 1000) : defaultMaxItems
+        limit = saved > 0 ? min(saved, maxHistorySize) : defaultMaxItems
         thumbs.countLimit = 40
 
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -200,6 +201,23 @@ final class Store: ObservableObject {
         return sizes[name] ?? ""
     }
 
+    // MARK: Edit
+    // Ubah teks clip, posisi tetap. Kalau jadi sama dengan clip lain, keduanya digabung.
+    @discardableResult
+    func update(_ id: UUID, text: String) -> Bool {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              text.utf8.count <= maxTextBytes,
+              let i = items.firstIndex(where: { $0.id == id }), !items[i].isImage else { return false }
+        guard items[i].text != text else { return true }
+        items[i].text = text
+        let pinnedDup = items.contains { $0.id != id && !$0.isImage && $0.text == text && $0.pinned }
+        if pinnedDup { items[i].pinned = true }
+        items.removeAll { $0.id != id && !$0.isImage && $0.text == text }
+        selected = max(0, min(selected, items.count - 1))
+        save()
+        return true
+    }
+
     // MARK: Pin & hapus
     var pinCount: Int { items.reduce(0) { $0 + ($1.pinned ? 1 : 0) } }
     var canPinMore: Bool { pinCount < maxPins }
@@ -272,6 +290,8 @@ final class Store: ObservableObject {
 struct ClipboardView: View {
     @ObservedObject var store: Store
     let onPick: (Clip) -> Void
+    let onCopy: (Clip) -> Void
+    let onEdit: (Clip) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
@@ -280,6 +300,8 @@ struct ClipboardView: View {
                 Text("\(store.items.count)/\(store.limit)  ·  \(store.pinCount)/\(maxPins) " + L("pinned", "pin"))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
+                    .help(L("Change the limit from the menu bar icon → History Size",
+                            "Ubah batas dari ikon menu bar → Jumlah Riwayat"))
                 Spacer()
                 Button(L("Clear all", "Hapus semua")) { store.clearUnpinned() }
                     .buttonStyle(.plain)
@@ -315,6 +337,9 @@ struct ClipboardView: View {
                                     thumbnail: clip.image.flatMap { store.thumbnail($0) },
                                     imageInfo: clip.image.map { store.imageSize($0) } ?? "",
                                     onPin: { store.togglePin(clip.id) },
+                                    onPaste: { onPick(clip) },
+                                    onCopy: { onCopy(clip) },
+                                    onEdit: { onEdit(clip) },
                                     onDelete: { store.remove(clip.id) }
                                 )
                                 .id(clip.id)
@@ -335,7 +360,7 @@ struct ClipboardView: View {
 
             Divider()
 
-            Text(L("↑↓ select  ·  Enter paste  ·  Del delete  ·  Esc close", "↑↓ pilih  ·  Enter paste  ·  Del hapus  ·  Esc tutup"))
+            Text(L("↑↓ select  ·  Enter paste  ·  E edit  ·  Del delete  ·  Esc close", "↑↓ pilih  ·  Enter paste  ·  E edit  ·  Del hapus  ·  Esc tutup"))
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .padding(.vertical, 6)
@@ -351,6 +376,9 @@ struct ClipRow: View {
     let thumbnail: NSImage?
     let imageInfo: String
     let onPin: () -> Void
+    let onPaste: () -> Void
+    let onCopy: () -> Void
+    let onEdit: () -> Void
     let onDelete: () -> Void
     @State private var hover = false
 
@@ -386,6 +414,11 @@ struct ClipRow: View {
                            action: onPin)
                     .opacity(clip.pinned ? 1 : (showActions ? (canPin ? 1 : 0.3) : 0))
                     .disabled(!canPin)
+                if !clip.isImage {
+                    IconButton(name: "pencil", help: L("Edit", "Edit"), action: onEdit)
+                        .opacity(showActions ? 1 : 0)
+                        .disabled(!showActions)
+                }
                 IconButton(name: "trash", help: L("Delete", "Hapus"), action: onDelete)
                     .opacity(showActions ? 1 : 0)
                     .disabled(!showActions)
@@ -398,6 +431,17 @@ struct ClipRow: View {
         )
         .contentShape(Rectangle())
         .onHover { hover = $0 }
+        .contextMenu {
+            Button(L("Paste", "Paste"), action: onPaste)
+            Button(L("Copy Only", "Copy Saja"), action: onCopy)
+            if !clip.isImage {
+                Button(L("Edit…", "Edit…"), action: onEdit)
+            }
+            Divider()
+            Button(clip.pinned ? L("Unpin", "Lepas Pin") : L("Pin", "Pin"), action: onPin)
+                .disabled(!canPin)
+            Button(L("Delete", "Hapus"), action: onDelete)
+        }
     }
 }
 
@@ -416,6 +460,210 @@ struct IconButton: View {
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
         .help(help)
+    }
+}
+
+// MARK: - Jendela bantu (editor & ukuran riwayat)
+// Saat ditutup, fokus dikembalikan ke app yang tadi aktif supaya paste berikutnya masuk ke sana
+@MainActor
+class AuxWindow: NSObject, NSWindowDelegate {
+    let window: NSWindow
+    private let previousApp: NSRunningApplication?
+    var onClose: (() -> Void)?
+
+    init(title: String, size: NSSize, resizable: Bool) {
+        let front = NSWorkspace.shared.frontmostApplication
+        previousApp = front == NSRunningApplication.current ? nil : front
+        window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
+                          styleMask: resizable ? [.titled, .closable, .resizable] : [.titled, .closable],
+                          backing: .buffered, defer: false)
+        window.title = title
+        window.isReleasedWhenClosed = false
+        window.level = .floating
+        super.init()
+        window.delegate = self
+    }
+
+    func setContent<V: View>(_ view: V, size: NSSize) {
+        window.contentViewController = NSHostingController(rootView: view)
+        window.setContentSize(size)
+    }
+
+    func show() {
+        if !window.isVisible { window.center() }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        previousApp?.activate(options: [])
+        // Jalankan setelah event ini selesai, supaya objek ini tidak dilepas di tengah delegate call
+        let done = onClose
+        onClose = nil
+        DispatchQueue.main.async { done?() }
+    }
+}
+
+final class EditModel: ObservableObject {
+    @Published var text: String
+    let original: String
+    init(_ text: String) { self.text = text; original = text }
+    var dirty: Bool { text != original }
+}
+
+struct EditView: View {
+    @ObservedObject var model: EditModel
+    let onSave: (_ paste: Bool) -> Void
+    let onCancel: () -> Void
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        let empty = model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let tooBig = model.text.utf8.count > maxTextBytes
+        VStack(alignment: .leading, spacing: 10) {
+            TextEditor(text: $model.text)
+                .font(.system(size: 13))
+                .focused($focused)
+                .padding(4)
+                .background(Color(nsColor: .textBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+
+            HStack(spacing: 8) {
+                Group {
+                    if tooBig {
+                        Text(L("Text too large (max 2 MB)", "Teks terlalu besar (maks 2 MB)")).foregroundStyle(.red)
+                    } else if empty {
+                        Text(L("Text can't be empty", "Teks tidak boleh kosong")).foregroundStyle(.orange)
+                    } else {
+                        Text(L("\(model.text.count) characters", "\(model.text.count) karakter")
+                             + (model.dirty ? L("  ·  edited", "  ·  diubah") : ""))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .font(.system(size: 11))
+                Spacer()
+                Button(L("Cancel", "Batal"), action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button(L("Save", "Simpan")) { onSave(false) }
+                    .keyboardShortcut("s", modifiers: .command)
+                    .disabled(empty || tooBig)
+                Button(L("Save & Paste", "Simpan & Paste")) { onSave(true) }
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(empty || tooBig)
+            }
+
+            Text(L("⌘S save  ·  ⌘↩ save & paste  ·  Esc cancel", "⌘S simpan  ·  ⌘↩ simpan & paste  ·  Esc batal"))
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .frame(minWidth: 460, minHeight: 260)
+        .onAppear { DispatchQueue.main.async { focused = true } }
+    }
+}
+
+@MainActor
+final class EditorWindow: AuxWindow {
+    let model: EditModel
+    private var saved = false
+    var pasteAfterClose = false
+
+    init(text: String, commit: @escaping (String) -> Bool) {
+        model = EditModel(text)
+        super.init(title: L("Edit Clip", "Edit Clip"), size: NSSize(width: 520, height: 340), resizable: true)
+        setContent(EditView(model: model,
+            onSave: { [weak self] paste in
+                guard let self else { return }
+                guard commit(self.model.text) else { NSSound.beep(); return }
+                self.saved = true
+                self.pasteAfterClose = paste
+                self.window.close()
+            },
+            onCancel: { [weak self] in self?.window.performClose(nil) }),
+            size: NSSize(width: 520, height: 340))
+    }
+
+    // Tanya dulu kalau ada perubahan yang belum disimpan
+    @objc func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard !saved, model.dirty else { return true }
+        let a = NSAlert()
+        a.messageText = L("Discard changes?", "Buang perubahan?")
+        a.informativeText = L("Your edits to this clip haven't been saved.", "Perubahan pada clip ini belum disimpan.")
+        a.addButton(withTitle: L("Discard", "Buang"))
+        a.addButton(withTitle: L("Keep Editing", "Lanjut Edit"))
+        return a.runModal() == .alertFirstButtonReturn
+    }
+}
+
+struct SizeView: View {
+    @ObservedObject var store: Store
+    @State var value: String
+    let onSave: (Int) -> Void
+    let onCancel: () -> Void
+
+    private var number: Int? {
+        Int(value.trimmingCharacters(in: .whitespaces)).flatMap { (1...maxHistorySize).contains($0) ? $0 : nil }
+    }
+
+    var body: some View {
+        let n = number
+        let lost = n.map { store.overflow(for: $0) } ?? 0
+        VStack(alignment: .leading, spacing: 12) {
+            Text(L("How many clips to keep?", "Berapa clip yang disimpan?"))
+                .font(.system(size: 13, weight: .semibold))
+
+            HStack(spacing: 6) {
+                TextField("", text: $value)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 80)
+                Stepper("", value: Binding(get: { n ?? store.limit },
+                                           set: { value = "\(min(max($0, 1), maxHistorySize))" }),
+                        in: 1...maxHistorySize)
+                    .labelsHidden()
+                Text(L("clips (1–\(maxHistorySize))", "clip (1–\(maxHistorySize))"))
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 6) {
+                ForEach(historySizeOptions, id: \.self) { p in
+                    Button("\(p)") { value = "\(p)" }
+                        .buttonStyle(.bordered)
+                        .tint(n == p ? .accentColor : nil)
+                }
+            }
+
+            Group {
+                if n == nil {
+                    Label(L("Enter a number from 1 to \(maxHistorySize)", "Masukkan angka 1 sampai \(maxHistorySize)"),
+                          systemImage: "exclamationmark.circle").foregroundStyle(.red)
+                } else if lost > 0 {
+                    Label(L("The \(lost) oldest unpinned clips will be deleted.", "\(lost) clip terlama yang tidak di-pin akan dihapus."),
+                          systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                } else {
+                    Text(L("Now: \(store.items.count) clips, \(store.pinCount) pinned. Pinned clips are always kept.",
+                           "Sekarang: \(store.items.count) clip, \(store.pinCount) di-pin. Clip yang di-pin selalu disimpan."))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .font(.system(size: 11))
+            .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Spacer()
+                Button(L("Cancel", "Batal"), action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button(lost > 0 ? L("Save & Delete \(lost)", "Simpan & Hapus \(lost)") : L("Save", "Simpan")) {
+                    if let n { onSave(n) }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(n == nil)
+            }
+        }
+        .padding(16)
+        .frame(width: 360)
     }
 }
 
@@ -563,6 +811,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
     var keyMonitor: Any?
     var clickMonitor: Any?
     var tiffProvider: LazyTIFF?
+    var editor: EditorWindow?
+    var sizeWindow: AuxWindow?
 
     func applicationWillTerminate(_ notification: Notification) { store.flush() }
 
@@ -574,6 +824,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         menu.delegate = self
         statusItem.menu = menu
 
+        buildMainMenu()
         buildPanel()
 
         let timer = Timer.scheduledTimer(timeInterval: 0.5, target: self,
@@ -649,9 +900,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         effect.layer?.cornerRadius = 12
         effect.layer?.masksToBounds = true
 
-        let host = NSHostingView(rootView: ClipboardView(store: store) { [weak self] clip in
-            self?.pick(clip)
-        })
+        let host = NSHostingView(rootView: ClipboardView(store: store,
+            onPick: { [weak self] clip in self?.pick(clip) },
+            onCopy: { [weak self] clip in self?.copyOnly(clip) },
+            onEdit: { [weak self] clip in self?.edit(clip) }))
         host.frame = effect.bounds
         host.autoresizingMask = [.width, .height]
         effect.addSubview(host)
@@ -701,6 +953,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             if store.items.indices.contains(store.selected) { pick(store.items[store.selected]) }
         case kVK_Delete, kVK_ForwardDelete:
             if store.items.indices.contains(store.selected) { store.remove(store.items[store.selected].id) }
+        case kVK_ANSI_E where e.modifierFlags.intersection([.command, .control, .option]).isEmpty:
+            guard store.items.indices.contains(store.selected) else { return true }
+            let clip = store.items[store.selected]
+            if clip.isImage { NSSound.beep() } else { edit(clip) }
         default:
             if let ch = e.charactersIgnoringModifiers, let n = Int(ch), (1...9).contains(n),
                store.items.indices.contains(n - 1) {
@@ -712,11 +968,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         return true
     }
 
-    func pick(_ clip: Clip) {
+    @discardableResult
+    func writeToPasteboard(_ clip: Clip) -> Bool {
         let pb = NSPasteboard.general
-        pb.clearContents()
         if clip.isImage {
-            guard let png = store.imageData(clip) else { NSSound.beep(); return }
+            guard let png = store.imageData(clip) else { NSSound.beep(); return false }
+            pb.clearContents()
             // PNG langsung, TIFF baru dibuat kalau app tujuan memintanya
             let item = NSPasteboardItem()
             item.setData(png, forType: .png)
@@ -725,17 +982,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             tiffProvider = provider
             pb.writeObjects([item])
         } else {
+            pb.clearContents()
             pb.setString(clip.text, forType: .string)
         }
         lastChange = pb.changeCount
         store.bump(clip.id)
+        return true
+    }
+
+    func pick(_ clip: Clip, pasteDelay: TimeInterval = 0.1) {
+        guard writeToPasteboard(clip) else { return }
         hidePanel()
 
         if AXIsProcessTrusted() {
-            perform(#selector(pasteToFrontApp), with: nil, afterDelay: 0.1)
+            perform(#selector(pasteToFrontApp), with: nil, afterDelay: pasteDelay)
         } else {
             requestAccessibility()
         }
+    }
+
+    // Salin ke clipboard tanpa paste otomatis
+    func copyOnly(_ clip: Clip) {
+        if writeToPasteboard(clip) { hidePanel() }
+    }
+
+    // MARK: Edit clip
+    func edit(_ clip: Clip) {
+        guard !clip.isImage else { return }
+        hidePanel()
+        // Editor lain masih terbuka: tutup dulu (tanya kalau belum disimpan)
+        if let old = editor, old.window.isVisible {
+            old.window.performClose(nil)
+            if old.window.isVisible { old.show(); return }
+        }
+
+        let id = clip.id
+        let e = EditorWindow(text: clip.text) { [weak self] text in
+            self?.store.update(id, text: text) ?? false
+        }
+        e.onClose = { [weak self, weak e] in
+            guard let self, let e else { return }
+            if self.editor === e { self.editor = nil }
+            if e.pasteAfterClose, let c = self.store.items.first(where: { $0.id == id }) {
+                // Tunggu app sebelumnya aktif lagi baru paste
+                self.pick(c, pasteDelay: 0.3)
+            }
+        }
+        editor = e
+        e.show()
+    }
+
+    // App accessory tidak punya menu, padahal Cmd+C/V/X/A/Z di editor butuh menu Edit
+    func buildMainMenu() {
+        let main = NSMenu()
+        let editItem = NSMenuItem()
+        let m = NSMenu(title: "Edit")
+        m.addItem(withTitle: L("Undo", "Urungkan"), action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = m.addItem(withTitle: L("Redo", "Ulangi"), action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        m.addItem(.separator())
+        m.addItem(withTitle: L("Cut", "Potong"), action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        m.addItem(withTitle: L("Copy", "Salin"), action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        m.addItem(withTitle: L("Paste", "Tempel"), action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        m.addItem(withTitle: L("Select All", "Pilih Semua"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        m.addItem(withTitle: L("Close", "Tutup"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        editItem.submenu = m
+        main.addItem(editItem)
+        NSApp.mainMenu = main
     }
 
     // MARK: Paste otomatis (Cmd+V ke aplikasi aktif)
@@ -785,6 +1098,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
             it.state = n == store.limit ? .on : .off
             sizeMenu.addItem(it)
         }
+        sizeMenu.addItem(.separator())
+        let isCustom = !historySizeOptions.contains(store.limit)
+        let custom = NSMenuItem(title: L("Custom", "Kustom") + (isCustom ? " (\(store.limit))" : "") + "…",
+                                action: #selector(customHistorySize), keyEquivalent: "")
+        custom.target = self
+        custom.state = isCustom ? .on : .off
+        sizeMenu.addItem(custom)
         size.submenu = sizeMenu
         menu.addItem(size)
 
@@ -816,8 +1136,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     @objc func clearAll() { store.clearUnpinned() }
 
-    @objc func setHistorySize(_ sender: NSMenuItem) {
-        let n = sender.tag
+    @objc func setHistorySize(_ sender: NSMenuItem) { applyHistorySize(sender.tag) }
+
+    @objc func customHistorySize() {
+        if let w = sizeWindow { w.show(); return }
+        let w = AuxWindow(title: L("History Size", "Jumlah Riwayat"), size: NSSize(width: 360, height: 220), resizable: false)
+        w.setContent(SizeView(store: store, value: "\(store.limit)",
+            onSave: { [weak self, weak w] n in
+                self?.store.setLimit(n)
+                w?.window.close()
+            },
+            onCancel: { [weak w] in w?.window.close() }),
+            size: NSSize(width: 360, height: 220))
+        w.onClose = { [weak self] in self?.sizeWindow = nil }
+        sizeWindow = w
+        w.show()
+    }
+
+    func applyHistorySize(_ n: Int) {
         guard n != store.limit else { return }
         let lost = store.overflow(for: n)
         if lost > 0 {
