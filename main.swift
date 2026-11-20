@@ -8,8 +8,11 @@ import ImageIO
 // MARK: - Konfigurasi
 let defaultMaxItems = 10                        // default total item (pin + biasa), bisa diubah dari menu
 let historySizeOptions = [10, 20, 50, 100, 200] // pilihan di menu "History Size"
+let minHistorySize = 2                          // minimal: 1 pin + 1 slot clip baru
 let maxHistorySize = 1000                       // batas atas untuk ukuran custom
-let maxPins = 7                                 // maksimal item yang di-pin
+let defaultPinLimit = 7                         // default maksimal item yang di-pin, bisa diubah dari menu
+let pinLimitOptions = [3, 5, 7, 10, 20]         // pilihan di menu "Pin Limit"
+let maxPinLimit = 100                           // batas atas untuk pin custom
 let maxTextBytes = 2 * 1024 * 1024              // teks lebih besar dari ini tidak disimpan
 let hotKeyCode = UInt32(kVK_ANSI_V)             // tombol V
 let hotKeyModifiers = UInt32(cmdKey | shiftKey) // Cmd + Shift
@@ -36,6 +39,7 @@ let maxImageBytes = 60 * 1024 * 1024
 final class Store: ObservableObject {
     @Published private(set) var items: [Clip] = []
     @Published private(set) var limit: Int
+    @Published private(set) var pinLimit: Int     // selalu < limit, supaya clip baru selalu dapat tempat
     @Published var selected = 0
     @Published var keyboardMoves = 0
     private let url: URL
@@ -48,7 +52,10 @@ final class Store: ObservableObject {
 
     init() {
         let saved = UserDefaults.standard.integer(forKey: "maxItems")
-        limit = saved > 0 ? min(saved, maxHistorySize) : defaultMaxItems
+        let lim = saved > 0 ? min(max(saved, minHistorySize), maxHistorySize) : defaultMaxItems
+        let savedPins = UserDefaults.standard.integer(forKey: "maxPins")
+        limit = lim
+        pinLimit = min(savedPins > 0 ? savedPins : defaultPinLimit, maxPinLimit, lim - 1)
         thumbs.countLimit = 40
 
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -65,6 +72,7 @@ final class Store: ObservableObject {
             }
         }
         items.removeAll { $0.isImage && !FileManager.default.fileExists(atPath: imageURL($0.image!).path) }
+        unpinExcess()
         trim()
         knownImages = Set(items.compactMap(\.image))
 
@@ -78,19 +86,35 @@ final class Store: ObservableObject {
         }
     }
 
-    // MARK: Jumlah riwayat
-    func setLimit(_ n: Int) {
+    // MARK: Jumlah riwayat & batas pin
+    func apply(limit n: Int, pins p: Int) {
         limit = n
-        UserDefaults.standard.set(n, forKey: "maxItems")
+        pinLimit = min(p, n - 1)
+        UserDefaults.standard.set(limit, forKey: "maxItems")
+        UserDefaults.standard.set(pinLimit, forKey: "maxPins")
+        unpinExcess()
         trim()
         selected = max(0, min(selected, items.count - 1))
         save()
     }
 
-    // Berapa item biasa yang akan terhapus kalau limit jadi n
-    func overflow(for n: Int) -> Int {
-        let unpinned = items.count - pinCount
-        return max(0, unpinned - max(0, n - pinCount))
+    // Ganti jumlah riwayat saja; batas pin ikut turun kalau tidak muat lagi
+    func setLimit(_ n: Int) { apply(limit: n, pins: min(pinLimit, n - 1)) }
+
+    // Dampak kalau limit jadi n dan batas pin jadi p: berapa pin dilepas, berapa clip terhapus
+    func preview(limit n: Int, pins p: Int) -> (unpin: Int, lost: Int) {
+        let keepPins = min(pinCount, p)
+        let unpinned = items.count - keepPins
+        return (pinCount - keepPins, max(0, unpinned - max(0, n - keepPins)))
+    }
+
+    // Pin di atas batas dilepas, mulai dari yang paling bawah (paling lama dipakai)
+    private func unpinExcess() {
+        var kept = 0
+        for i in items.indices where items[i].pinned {
+            kept += 1
+            if kept > pinLimit { items[i].pinned = false }
+        }
     }
 
     // MARK: Tambah
@@ -220,7 +244,7 @@ final class Store: ObservableObject {
 
     // MARK: Pin & hapus
     var pinCount: Int { items.reduce(0) { $0 + ($1.pinned ? 1 : 0) } }
-    var canPinMore: Bool { pinCount < maxPins }
+    var canPinMore: Bool { pinCount < pinLimit }
 
     func togglePin(_ id: UUID) {
         guard let i = items.firstIndex(where: { $0.id == id }) else { return }
@@ -297,11 +321,11 @@ struct ClipboardView: View {
         VStack(spacing: 0) {
             HStack {
                 Text("Clipboard").font(.system(size: 13, weight: .semibold))
-                Text("\(store.items.count)/\(store.limit)  ·  \(store.pinCount)/\(maxPins) " + L("pinned", "pin"))
+                Text("\(store.items.count)/\(store.limit)  ·  \(store.pinCount)/\(store.pinLimit) " + L("pinned", "pin"))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                    .help(L("Change the limit from the menu bar icon → History Size",
-                            "Ubah batas dari ikon menu bar → Jumlah Riwayat"))
+                    .help(L("Change these limits from the menu bar icon → History Size / Pin Limit",
+                            "Ubah batas dari ikon menu bar → Jumlah Riwayat / Batas Pin"))
                 Spacer()
                 Button(L("Clear all", "Hapus semua")) { store.clearUnpinned() }
                     .buttonStyle(.plain)
@@ -334,6 +358,7 @@ struct ClipboardView: View {
                                     clip: clip,
                                     selected: i == store.selected,
                                     canPin: clip.pinned || canPinMore,
+                                    pinLimit: store.pinLimit,
                                     thumbnail: clip.image.flatMap { store.thumbnail($0) },
                                     imageInfo: clip.image.map { store.imageSize($0) } ?? "",
                                     onPin: { store.togglePin(clip.id) },
@@ -373,6 +398,7 @@ struct ClipRow: View {
     let clip: Clip
     let selected: Bool
     let canPin: Bool
+    let pinLimit: Int
     let thumbnail: NSImage?
     let imageInfo: String
     let onPin: () -> Void
@@ -410,7 +436,7 @@ struct ClipRow: View {
 
             HStack(spacing: 0) {
                 IconButton(name: clip.pinned ? "pin.fill" : "pin",
-                           help: clip.pinned ? L("Unpin", "Lepas pin") : (canPin ? L("Pin", "Pin") : L("Max \(maxPins) pins", "Maksimal \(maxPins) pin")),
+                           help: clip.pinned ? L("Unpin", "Lepas pin") : (canPin ? L("Pin", "Pin") : L("Max \(pinLimit) pins", "Maksimal \(pinLimit) pin")),
                            action: onPin)
                     .opacity(clip.pinned ? 1 : (showActions ? (canPin ? 1 : 0.3) : 0))
                     .disabled(!canPin)
@@ -597,55 +623,94 @@ final class EditorWindow: AuxWindow {
     }
 }
 
-struct SizeView: View {
-    @ObservedObject var store: Store
-    @State var value: String
-    let onSave: (Int) -> Void
-    let onCancel: () -> Void
-
-    private var number: Int? {
-        Int(value.trimmingCharacters(in: .whitespaces)).flatMap { (1...maxHistorySize).contains($0) ? $0 : nil }
-    }
+struct NumberRow: View {
+    let title: String
+    @Binding var value: String
+    let range: ClosedRange<Int>
+    let presets: [Int]
+    let unit: String
 
     var body: some View {
-        let n = number
-        let lost = n.map { store.overflow(for: $0) } ?? 0
-        VStack(alignment: .leading, spacing: 12) {
-            Text(L("How many clips to keep?", "Berapa clip yang disimpan?"))
-                .font(.system(size: 13, weight: .semibold))
-
+        let current = Int(value.trimmingCharacters(in: .whitespaces))
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.system(size: 13, weight: .semibold))
             HStack(spacing: 6) {
                 TextField("", text: $value)
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 80)
-                Stepper("", value: Binding(get: { n ?? store.limit },
-                                           set: { value = "\(min(max($0, 1), maxHistorySize))" }),
-                        in: 1...maxHistorySize)
+                Stepper("", value: Binding(get: { current ?? range.lowerBound },
+                                           set: { value = "\(min(max($0, range.lowerBound), range.upperBound))" }),
+                        in: range)
                     .labelsHidden()
-                Text(L("clips (1–\(maxHistorySize))", "clip (1–\(maxHistorySize))"))
+                Text("\(unit) (\(range.lowerBound)–\(range.upperBound))")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
             }
-
             HStack(spacing: 6) {
-                ForEach(historySizeOptions, id: \.self) { p in
+                ForEach(presets, id: \.self) { p in
                     Button("\(p)") { value = "\(p)" }
                         .buttonStyle(.bordered)
-                        .tint(n == p ? .accentColor : nil)
+                        .tint(current == p ? .accentColor : nil)
                 }
             }
+        }
+    }
+}
 
-            Group {
+struct LimitsView: View {
+    @ObservedObject var store: Store
+    @State var size: String
+    @State var pins: String
+    let onSave: (Int, Int) -> Void
+    let onCancel: () -> Void
+
+    private func parse(_ s: String, _ r: ClosedRange<Int>) -> Int? {
+        Int(s.trimmingCharacters(in: .whitespaces)).flatMap { r.contains($0) ? $0 : nil }
+    }
+
+    var body: some View {
+        let n = parse(size, minHistorySize...maxHistorySize)
+        let p = parse(pins, 1...maxPinLimit)
+        let valid = n != nil && p != nil && p! < n!
+        let effect = valid ? store.preview(limit: n!, pins: p!) : (unpin: 0, lost: 0)
+
+        VStack(alignment: .leading, spacing: 14) {
+            NumberRow(title: L("Clips to keep", "Jumlah clip yang disimpan"), value: $size,
+                      range: minHistorySize...maxHistorySize, presets: historySizeOptions, unit: L("clips", "clip"))
+            NumberRow(title: L("Maximum pinned clips", "Maksimal clip yang di-pin"), value: $pins,
+                      range: 1...maxPinLimit, presets: pinLimitOptions, unit: L("pins", "pin"))
+
+            VStack(alignment: .leading, spacing: 4) {
                 if n == nil {
-                    Label(L("Enter a number from 1 to \(maxHistorySize)", "Masukkan angka 1 sampai \(maxHistorySize)"),
+                    Label(L("Clips to keep: enter a number from \(minHistorySize) to \(maxHistorySize)",
+                            "Jumlah clip: masukkan angka \(minHistorySize) sampai \(maxHistorySize)"),
                           systemImage: "exclamationmark.circle").foregroundStyle(.red)
-                } else if lost > 0 {
-                    Label(L("The \(lost) oldest unpinned clips will be deleted.", "\(lost) clip terlama yang tidak di-pin akan dihapus."),
-                          systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
-                } else {
-                    Text(L("Now: \(store.items.count) clips, \(store.pinCount) pinned. Pinned clips are always kept.",
-                           "Sekarang: \(store.items.count) clip, \(store.pinCount) di-pin. Clip yang di-pin selalu disimpan."))
-                        .foregroundStyle(.secondary)
+                }
+                if p == nil {
+                    Label(L("Pins: enter a number from 1 to \(maxPinLimit)", "Pin: masukkan angka 1 sampai \(maxPinLimit)"),
+                          systemImage: "exclamationmark.circle").foregroundStyle(.red)
+                }
+                if let n, let p, p >= n {
+                    Label(L("Pins must be fewer than clips to keep, so new copies still have room.",
+                            "Jumlah pin harus lebih kecil dari jumlah clip, supaya clip baru tetap dapat tempat."),
+                          systemImage: "exclamationmark.circle").foregroundStyle(.red)
+                }
+                if valid {
+                    if effect.unpin > 0 {
+                        Label(L("The \(effect.unpin) lowest pinned clips will be unpinned.",
+                                "\(effect.unpin) pin paling bawah akan dilepas."),
+                              systemImage: "pin.slash").foregroundStyle(.orange)
+                    }
+                    if effect.lost > 0 {
+                        Label(L("The \(effect.lost) oldest unpinned clips will be deleted.",
+                                "\(effect.lost) clip terlama yang tidak di-pin akan dihapus."),
+                              systemImage: "exclamationmark.triangle").foregroundStyle(.orange)
+                    }
+                    if effect.unpin == 0 && effect.lost == 0 {
+                        Text(L("Now: \(store.items.count) clips, \(store.pinCount) pinned. Pinned clips are always kept.",
+                               "Sekarang: \(store.items.count) clip, \(store.pinCount) di-pin. Clip yang di-pin selalu disimpan."))
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .font(.system(size: 11))
@@ -655,15 +720,15 @@ struct SizeView: View {
                 Spacer()
                 Button(L("Cancel", "Batal"), action: onCancel)
                     .keyboardShortcut(.cancelAction)
-                Button(lost > 0 ? L("Save & Delete \(lost)", "Simpan & Hapus \(lost)") : L("Save", "Simpan")) {
-                    if let n { onSave(n) }
+                Button(effect.lost > 0 ? L("Save & Delete \(effect.lost)", "Simpan & Hapus \(effect.lost)") : L("Save", "Simpan")) {
+                    if valid { onSave(n!, p!) }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(n == nil)
+                .disabled(!valid)
             }
         }
         .padding(16)
-        .frame(width: 360)
+        .frame(width: 380)
     }
 }
 
@@ -1108,6 +1173,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
         size.submenu = sizeMenu
         menu.addItem(size)
 
+        let pin = NSMenuItem(title: L("Pin Limit", "Batas Pin") + " (\(store.pinLimit))", action: nil, keyEquivalent: "")
+        let pinMenu = NSMenu()
+        pinMenu.autoenablesItems = false
+        for p in pinLimitOptions {
+            let it = NSMenuItem(title: L("\(p) pins", "\(p) pin"), action: #selector(setPinLimit(_:)), keyEquivalent: "")
+            it.target = self
+            it.tag = p
+            it.state = p == store.pinLimit ? .on : .off
+            it.isEnabled = p < store.limit   // harus lebih kecil dari jumlah riwayat
+            if !it.isEnabled { it.toolTip = L("Must be fewer than the history size", "Harus lebih kecil dari jumlah riwayat") }
+            pinMenu.addItem(it)
+        }
+        pinMenu.addItem(.separator())
+        let pinCustom = !pinLimitOptions.contains(store.pinLimit)
+        let pc = NSMenuItem(title: L("Custom", "Kustom") + (pinCustom ? " (\(store.pinLimit))" : "") + "…",
+                            action: #selector(customHistorySize), keyEquivalent: "")
+        pc.target = self
+        pc.state = pinCustom ? .on : .off
+        pinMenu.addItem(pc)
+        pin.submenu = pinMenu
+        menu.addItem(pin)
+
         let clear = NSMenuItem(title: L("Clear All (except pinned)", "Hapus Semua (kecuali pin)"), action: #selector(clearAll), keyEquivalent: "")
         clear.target = self
         menu.addItem(clear)
@@ -1138,16 +1225,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     @objc func setHistorySize(_ sender: NSMenuItem) { applyHistorySize(sender.tag) }
 
+    @objc func setPinLimit(_ sender: NSMenuItem) {
+        let p = sender.tag
+        guard p != store.pinLimit, p < store.limit else { return }
+        guard confirmLimits(limit: store.limit, pins: p) else { return }
+        store.apply(limit: store.limit, pins: p)
+    }
+
+    // Jendela kustom: jumlah riwayat + batas pin sekaligus
     @objc func customHistorySize() {
         if let w = sizeWindow { w.show(); return }
-        let w = AuxWindow(title: L("History Size", "Jumlah Riwayat"), size: NSSize(width: 360, height: 220), resizable: false)
-        w.setContent(SizeView(store: store, value: "\(store.limit)",
-            onSave: { [weak self, weak w] n in
-                self?.store.setLimit(n)
+        let w = AuxWindow(title: L("History Limits", "Batas Riwayat"), size: NSSize(width: 380, height: 330), resizable: false)
+        w.setContent(LimitsView(store: store, size: "\(store.limit)", pins: "\(store.pinLimit)",
+            onSave: { [weak self, weak w] n, p in
+                self?.store.apply(limit: n, pins: p)
                 w?.window.close()
             },
             onCancel: { [weak w] in w?.window.close() }),
-            size: NSSize(width: 360, height: 220))
+            size: NSSize(width: 380, height: 330))
         w.onClose = { [weak self] in self?.sizeWindow = nil }
         sizeWindow = w
         w.show()
@@ -1155,18 +1250,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSWind
 
     func applyHistorySize(_ n: Int) {
         guard n != store.limit else { return }
-        let lost = store.overflow(for: n)
-        if lost > 0 {
-            NSApp.activate(ignoringOtherApps: true)
-            let a = NSAlert()
-            a.messageText = L("Keep only \(n) items?", "Simpan hanya \(n) item?")
-            a.informativeText = L("The \(lost) oldest unpinned items will be deleted.",
-                                  "\(lost) item terlama yang tidak di-pin akan dihapus.")
-            a.addButton(withTitle: L("Delete", "Hapus"))
-            a.addButton(withTitle: L("Cancel", "Batal"))
-            guard a.runModal() == .alertFirstButtonReturn else { return }
-        }
+        guard confirmLimits(limit: n, pins: min(store.pinLimit, n - 1)) else { return }
         store.setLimit(n)
+    }
+
+    // Konfirmasi kalau ada pin dilepas atau clip terhapus
+    func confirmLimits(limit n: Int, pins p: Int) -> Bool {
+        let (unpin, lost) = store.preview(limit: n, pins: p)
+        var lines: [String] = []
+        if p < store.pinLimit && n != store.limit {   // jumlah riwayat turun sampai batas pin ikut turun
+            lines.append(L("Pin limit becomes \(p).", "Batas pin jadi \(p)."))
+        }
+        if unpin > 0 { lines.append(L("The \(unpin) lowest pinned clips will be unpinned.", "\(unpin) pin paling bawah akan dilepas.")) }
+        if lost > 0 { lines.append(L("The \(lost) oldest unpinned clips will be deleted.", "\(lost) clip terlama yang tidak di-pin akan dihapus.")) }
+        guard unpin > 0 || lost > 0 else { return true }
+
+        NSApp.activate(ignoringOtherApps: true)
+        let a = NSAlert()
+        a.messageText = L("Keep \(n) clips, max \(p) pinned?", "Simpan \(n) clip, maksimal \(p) pin?")
+        a.informativeText = lines.joined(separator: "\n")
+        a.addButton(withTitle: lost > 0 ? L("Delete", "Hapus") : L("Continue", "Lanjut"))
+        a.addButton(withTitle: L("Cancel", "Batal"))
+        return a.runModal() == .alertFirstButtonReturn
     }
 
     @objc func toggleLogin(_ sender: NSMenuItem) {

@@ -42,7 +42,7 @@ Requires macOS 13 or later. Runs on both Apple Silicon and Intel.
 • Right-click any item for Paste, Copy Only, Edit, Pin and Delete
 • Delete button on every item, plus "Clear all" for everything that isn't pinned
 • Keyboard navigation: ↑↓ to select, 1–9 for quick pick, E to edit, Delete to remove, Esc to close
-• Keeps 10 items by default (change it under "History Size" in the menu: 10, 20, 50, 100, 200, or "Custom…" for any number from 1 to 1000, which shows how many old clips would be removed before you save), up to 7 of them pinned. The oldest unpinned item is removed when you copy something new
+• Keeps 10 items by default (change it under "History Size" in the menu: 10, 20, 50, 100, 200, or "Custom…" for any number from 2 to 1000, which shows how many old clips would be removed before you save), up to 7 of them pinned (change it under "Pin Limit": 3, 5, 7, 10, 20, or a custom number up to 100; it must be smaller than the history size). Lowering it unpins the lowest pinned items. The oldest unpinned item is removed when you copy something new
 • Light on resources: saving, image conversion and cleanup run in the background, thumbnails are small and cached with a limit, and text over 2 MB is skipped
 • Ignores text copied from password managers
 • History is saved to `~/Library/Application Support/ClipHistory/` (`history.json` plus an `images` folder), so it survives restarts
@@ -88,4 +88,4 @@ Signing uses two repository secrets: `SIGNING_CERT_P12` (base64 of the .p12) and
 
 ## Configuration
 
-History size is set from the menu bar ("History Size") and remembered across restarts. Other constants live at the top of `main.swift`: default history size and menu options, number of pins, max text size, and the hotkey.
+History size and pin limit are set from the menu bar ("History Size" / "Pin Limit") and remembered across restarts. Other constants live at the top of `main.swift`: default history size and pin limit with their menu options, max text size, and the hotkey.
